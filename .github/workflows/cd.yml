@@ -43,19 +43,13 @@ jobs:
         role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
         aws-region: ${{ env.AWS_REGION }}
     
-    - name: Get ECR registry from Terraform outputs
+    - name: Get ECR registry ID
       id: ecr-registry
       run: |
-        cd ../cloudnative-saas-eks/examples/dev-environment/infrastructure
-        terraform init -backend-config=backend-dev.tfbackend
-        ECR_REGISTRY=$(terraform output -raw ecr_registry_id 2>/dev/null || terraform output -json | jq -r '.ecr_registry_id.value // empty')
-        if [ -z "$ECR_REGISTRY" ]; then
-          # Fallback: extract from backend repo URL
-          BACKEND_REPO=$(terraform output -raw ecr_backend_repository_url)
-          ECR_REGISTRY=$(echo $BACKEND_REPO | cut -d'/' -f1)
-        fi
+        # Get AWS account ID (which is the ECR registry ID)
+        ECR_REGISTRY=$(aws sts get-caller-identity --query Account --output text)
         echo "registry_id=$ECR_REGISTRY" >> $GITHUB_OUTPUT
-        echo "ECR Registry: $ECR_REGISTRY"
+        echo "ECR Registry ID: $ECR_REGISTRY"
     
     - name: Login to Amazon ECR
       id: login-ecr
@@ -137,31 +131,38 @@ jobs:
       with:
         version: 'latest'
     
-    - name: Get EKS cluster name from Terraform
+    - name: Get EKS cluster name
       id: eks-cluster
       run: |
-        cd ../cloudnative-saas-eks/examples/dev-environment/infrastructure
-        terraform init -backend-config=backend-dev.tfbackend
-        CLUSTER_NAME=$(terraform output -raw cluster_name)
+        # Get the first EKS cluster in the region (or use a secret if you have multiple)
+        CLUSTER_NAME=$(aws eks list-clusters --region ${{ env.AWS_REGION }} --query 'clusters[0]' --output text)
+        if [ -z "$CLUSTER_NAME" ] || [ "$CLUSTER_NAME" == "None" ]; then
+          echo "Error: No EKS clusters found in region ${{ env.AWS_REGION }}"
+          exit 1
+        fi
         echo "cluster_name=$CLUSTER_NAME" >> $GITHUB_OUTPUT
+        echo "EKS Cluster: $CLUSTER_NAME"
     
     - name: Update kubeconfig
       run: |
         aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ steps.eks-cluster.outputs.cluster_name }}
     
-    - name: Get ECR repository URLs from Terraform
+    - name: Get ECR repository URLs
       id: ecr-repos
       run: |
-        cd ../cloudnative-saas-eks/examples/dev-environment/infrastructure
-        terraform init -backend-config=backend-dev.tfbackend
-        BACKEND_REPO=$(terraform output -raw ecr_backend_repository_url)
-        FRONTEND_REPO=$(terraform output -raw ecr_frontend_repository_url)
+        # Build ECR repository URLs from secrets
+        ECR_REGISTRY=$(aws sts get-caller-identity --query Account --output text)
+        BACKEND_REPO="${ECR_REGISTRY}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_BACKEND_REPO }}"
+        FRONTEND_REPO="${ECR_REGISTRY}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_FRONTEND_REPO }}"
         echo "backend_repo=$BACKEND_REPO" >> $GITHUB_OUTPUT
         echo "frontend_repo=$FRONTEND_REPO" >> $GITHUB_OUTPUT
+        echo "Backend repo: $BACKEND_REPO"
+        echo "Frontend repo: $FRONTEND_REPO"
     
     - name: Update Kubernetes manifests with image tags
       run: |
-        IMAGE_TAG="${{ needs.build-and-push.outputs.image-tag }}"
+        # Use commit SHA as image tag (or latest if not available)
+        IMAGE_TAG="${{ github.sha }}"
         if [ -z "$IMAGE_TAG" ]; then
           IMAGE_TAG="latest"
         fi
@@ -169,11 +170,15 @@ jobs:
         BACKEND_IMAGE="${{ steps.ecr-repos.outputs.backend_repo }}:$IMAGE_TAG"
         FRONTEND_IMAGE="${{ steps.ecr-repos.outputs.frontend_repo }}:$IMAGE_TAG"
         
+        echo "Updating manifests with:"
+        echo "  Backend: $BACKEND_IMAGE"
+        echo "  Frontend: $FRONTEND_IMAGE"
+        
         # Update backend deployment
-        find k8s/namespace-${{ matrix.namespace }} -name "*backend-deployment.yaml" -exec sed -i "s|your-registry/task-management-backend:latest|$BACKEND_IMAGE|g" {} \;
+        find k8s/namespace-${{ matrix.namespace }} -name "*backend-deployment.yaml" -exec sed -i "s|image:.*task-management-backend.*|image: $BACKEND_IMAGE|g" {} \;
         
         # Update frontend deployment
-        find k8s/namespace-${{ matrix.namespace }} -name "*frontend-deployment.yaml" -exec sed -i "s|your-registry/task-management-frontend:latest|$FRONTEND_IMAGE|g" {} \;
+        find k8s/namespace-${{ matrix.namespace }} -name "*frontend-deployment.yaml" -exec sed -i "s|image:.*task-management-frontend.*|image: $FRONTEND_IMAGE|g" {} \;
     
     - name: Deploy to ${{ matrix.namespace }} namespace
       run: |
