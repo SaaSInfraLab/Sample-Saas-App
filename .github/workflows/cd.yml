@@ -235,6 +235,14 @@ jobs:
         namespace: [platform, analytics]
     steps:
       - uses: actions/checkout@v4
+      - name: Checkout Terraform Configuration
+        if: matrix.namespace == 'analytics'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/cloudnative-saas-eks
+          path: cloudnative-saas-eks
+          # Use GITHUB_TOKEN for same org, or PAT if different org
+          token: ${{ secrets.GITHUB_TOKEN }}
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
@@ -396,18 +404,23 @@ jobs:
           fi
           
           # Navigate to tenants Terraform directory
-          if [ -d "cloudnative-saas-eks/examples/dev-environment/tenants" ]; then
-            cd cloudnative-saas-eks/examples/dev-environment/tenants
-          elif [ -d "../../cloudnative-saas-eks/examples/dev-environment/tenants" ]; then
-            cd ../../cloudnative-saas-eks/examples/dev-environment/tenants
-          else
-            echo "❌ Terraform tenants directory not found"
+          TERRAFORM_DIR="cloudnative-saas-eks/examples/dev-environment/tenants"
+          
+          if [ ! -d "$TERRAFORM_DIR" ]; then
+            echo "❌ Terraform tenants directory not found at: $TERRAFORM_DIR"
             echo "Current directory: $(pwd)"
+            echo "Directory contents:"
             ls -la
+            if [ -d "cloudnative-saas-eks" ]; then
+              echo "cloudnative-saas-eks directory exists, contents:"
+              ls -la cloudnative-saas-eks/ || true
+            fi
             exit 1
           fi
           
+          cd "$TERRAFORM_DIR"
           echo "📂 Working directory: $(pwd)"
+          echo "✅ Terraform directory found"
           
           # Initialize Terraform
           echo "🔧 Initializing Terraform..."
