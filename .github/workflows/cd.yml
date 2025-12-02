@@ -351,33 +351,6 @@ jobs:
           
           echo "✅ Platform namespace secrets setup completed"
 
-      - name: Verify Secrets for Analytics Namespace
-        timeout-minutes: 2
-        run: |
-          set -e
-          echo "🔐 Verifying secrets for analytics namespace..."
-          
-          # Verify postgresql-secret exists (should be created by Terraform separately)
-          if ! kubectl get secret postgresql-secret -n analytics >/dev/null 2>&1; then
-            echo "❌ Error: postgresql-secret not found in analytics namespace"
-            echo "⚠️  This secret should be created by Terraform tenants module"
-            echo "⚠️  Run Terraform apply separately: cd cloudnative-saas-eks/examples/dev-environment/tenants && terraform apply"
-            exit 1
-          fi
-          
-          echo "✅ postgresql-secret found in analytics namespace"
-          
-          # Verify backend-secret exists
-          if ! kubectl get secret backend-secret -n analytics >/dev/null 2>&1; then
-            echo "❌ Error: backend-secret not found in analytics namespace"
-            echo "⚠️  This secret should be created by Terraform tenants module"
-            echo "⚠️  Run Terraform apply separately: cd cloudnative-saas-eks/examples/dev-environment/tenants && terraform apply"
-            exit 1
-          fi
-          
-          echo "✅ backend-secret found in analytics namespace"
-          echo "✅ All required secrets are present for analytics namespace"
-
       - name: Verify All Secrets Ready
         timeout-minutes: 1
         run: |
@@ -386,14 +359,58 @@ jobs:
           echo "Platform namespace secrets:"
           kubectl get secrets -n platform | grep -E "(db-credentials)" || echo "⚠️  db-credentials not found"
           echo ""
-          echo "Analytics namespace secrets:"
-          kubectl get secrets -n analytics | grep -E "(postgresql-secret|backend-secret)" || echo "⚠️  Required secrets not found"
-          echo ""
-          echo "✅ All secret setup completed - ready for deployment"
+          echo "✅ Platform namespace secrets verified"
+
+  setup-analytics-secrets:
+    name: Setup Secrets for Analytics Namespace
+    needs: [build-backend, build-frontend, cluster-setup]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: azure/setup-kubectl@v3
+      - name: Setup kubectl
+        run: |
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ needs.cluster-setup.outputs.cluster_name }}
+          echo "KUBECONFIG=$HOME/.kube/config" >> $GITHUB_ENV
+
+      - name: Install jq
+        run: |
+          sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Fetch and apply analytics secrets
+        run: |
+          set -e
+          echo "🔐 Setting up secrets for analytics namespace..."
+          
+          # Pull secret JSON from AWS Secrets Manager
+          SECRET_JSON=$(aws secretsmanager get-secret-value \
+            --secret-id ${{ secrets.ANALYTICS_SECRET_ARN }} \
+            --query SecretString --output text)
+          
+          # Create/update postgresql-secret
+          kubectl create secret generic postgresql-secret -n analytics \
+            --from-literal=db-user=$(echo "$SECRET_JSON" | jq -r '.username') \
+            --from-literal=db-password=$(echo "$SECRET_JSON" | jq -r '.password') \
+            --dry-run=client -o yaml | kubectl apply -f -
+          
+          # Create/update backend-secret
+          kubectl create secret generic backend-secret -n analytics \
+            --from-literal=jwt-secret=$(echo "$SECRET_JSON" | jq -r '.jwt') \
+            --dry-run=client -o yaml | kubectl apply -f -
+          
+          echo "✅ Analytics secrets setup completed"
 
   deploy:
     name: Deploy
-    needs: [build-backend, build-frontend, cluster-setup, setup-secrets]
+    needs: [build-backend, build-frontend, cluster-setup, setup-secrets, setup-analytics-secrets]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
