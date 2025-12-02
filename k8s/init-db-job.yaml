@@ -1,36 +1,81 @@
-apiVersion: v1
-kind: ConfigMap
+apiVersion: batch/v1
+kind: Job
 metadata:
-  name: backend-config
-  namespace: data
-data:
-  db-name: "taskdb"
-  db-pool-min: "2"
-  db-pool-max: "10"
-  jwt-expires-in: "24h"
-  metrics-enabled: "true"
-
+  name: init-rds-database
+  namespace: platform
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+      - name: init-db
+        image: postgres:15-alpine
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+          limits:
+            cpu: "200m"
+            memory: "128Mi"
+        env:
+        - name: DB_HOST
+          valueFrom:
+            secretKeyRef:
+              name: db-credentials
+              key: db-host
+        - name: DB_USER
+          valueFrom:
+            secretKeyRef:
+              name: db-credentials
+              key: db-username
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: db-credentials
+              key: db-password
+        - name: DB_NAME
+          valueFrom:
+            secretKeyRef:
+              name: db-credentials
+              key: db-name
+        command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Initializing RDS database..."
+          export PGPASSWORD=${DB_PASSWORD}
+          
+          echo "Running migration 001_create_tenants.sql..."
+          psql -h ${DB_HOST} -U ${DB_USER} -d ${DB_NAME} -f /migrations/001_create_tenants.sql
+          
+          echo "Running migration 002_create_users.sql..."
+          psql -h ${DB_HOST} -U ${DB_USER} -d ${DB_NAME} -f /migrations/002_create_users.sql
+          
+          echo "Running migration 003_create_tasks.sql..."
+          psql -h ${DB_HOST} -U ${DB_USER} -d ${DB_NAME} -f /migrations/003_create_tasks.sql
+          
+          echo "Verifying database..."
+          psql -h ${DB_HOST} -U ${DB_USER} -d ${DB_NAME} -c "SELECT COUNT(*) FROM tenants; SELECT schema_name FROM information_schema.schemata WHERE schema_name LIKE 'tenant_%';"
+          
+          echo "Database initialization complete!"
+        volumeMounts:
+        - name: migrations
+          mountPath: /migrations
+      volumes:
+      - name: migrations
+        configMap:
+          name: db-init-scripts
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: postgresql-config
-  namespace: data
-data:
-  db-name: "taskdb"
-
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: postgresql-init-scripts
-  namespace: data
+  name: db-init-scripts
+  namespace: platform
 data:
   001_create_tenants.sql: |
     -- Create tenant schemas
     CREATE SCHEMA IF NOT EXISTS tenant_platform;
     CREATE SCHEMA IF NOT EXISTS tenant_analytics;
-    CREATE SCHEMA IF NOT EXISTS tenant_data;
     
     -- Create tenant metadata table
     CREATE TABLE IF NOT EXISTS tenants (
@@ -44,8 +89,7 @@ data:
     
     INSERT INTO tenants (tenant_id, name, namespace) VALUES
         ('platform', 'Platform Team', 'platform'),
-        ('analytics', 'Analytics Team', 'analytics'),
-        ('data', 'Data Team', 'data')
+        ('analytics', 'Analytics Team', 'analytics')
     ON CONFLICT (tenant_id) DO NOTHING;
   
   002_create_users.sql: |
@@ -64,13 +108,12 @@ data:
                 updated_at TIMESTAMP DEFAULT NOW()
             );
             CREATE INDEX IF NOT EXISTS idx_users_email ON %I.users(email);
-        ', schema_name);
+        ', schema_name, schema_name);
     END;
     $$ LANGUAGE plpgsql;
     
     SELECT create_users_table('tenant_platform');
     SELECT create_users_table('tenant_analytics');
-    SELECT create_users_table('tenant_data');
     DROP FUNCTION IF EXISTS create_users_table(TEXT);
   
   003_create_tasks.sql: |
@@ -92,11 +135,11 @@ data:
                 FOREIGN KEY (created_by) REFERENCES %I.users(id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_tasks_status ON %I.tasks(status);
-        ', schema_name, schema_name);
+        ', schema_name, schema_name, schema_name);
     END;
     $$ LANGUAGE plpgsql;
     
     SELECT create_tasks_table('tenant_platform');
     SELECT create_tasks_table('tenant_analytics');
-    SELECT create_tasks_table('tenant_data');
     DROP FUNCTION IF EXISTS create_tasks_table(TEXT);
+

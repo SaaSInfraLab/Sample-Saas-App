@@ -1,213 +1,60 @@
-# CI/CD Setup Guide
+# CI/CD Setup
 
-This guide explains how to set up the complete CI/CD pipeline for deploying the Task Management SaaS application to EKS.
-
-## Architecture
-
-```
-GitHub Push → GitHub Actions → Build Images → Push to ECR → Deploy to EKS
-```
+Automated deployment using GitHub Actions with optimized timeouts and robust error handling.
 
 ## Prerequisites
 
-1. **Terraform Infrastructure Deployed**
-   - EKS cluster must be running
-   - ECR repositories must be created (via Terraform)
-   - See `cloudnative-saas-eks` repository for infrastructure setup
+- EKS cluster deployed (via Terraform)
+- ECR repositories created (via Terraform)
+- GitHub Actions IAM role configured with permissions:
+  - ECR: Push/pull images
+  - EKS: Update kubeconfig, apply manifests
+  - S3: Read Terraform state
+  - Secrets Manager: Read RDS credentials (for platform namespace)
+- Terraform state stored in S3 (for RDS secret ARN retrieval)
 
-2. **GitHub Repository**
-   - Repository must be on GitHub
-   - GitHub Actions must be enabled
+## Setup
 
-3. **AWS IAM Role for GitHub Actions**
-   - Role with permissions to push to ECR and deploy to EKS
-   - Configured with OIDC trust relationship (recommended) or access keys
+1. Configure GitHub Secrets:
+   - `AWS_ROLE_ARN` - IAM role ARN for GitHub Actions
+   - `ECR_BACKEND_REPO` - ECR repository name for backend
+   - `ECR_FRONTEND_REPO` - ECR repository name for frontend
 
-## Step 1: Deploy Infrastructure with ECR
-
-The ECR repositories are automatically created when you deploy the infrastructure:
-
-```bash
-cd cloudnative-saas-eks/examples/dev-environment/infrastructure
-terraform init -backend-config=backend-dev.tfbackend
-terraform apply -var-file=../infrastructure.tfvars
-```
-
-This creates:
-- `{cluster-name}-backend` ECR repository
-- `{cluster-name}-frontend` ECR repository
-
-## Step 2: Configure GitHub Secrets
-
-Go to your GitHub repository → Settings → Secrets and variables → Actions
-
-Add these secrets:
-
-### Required Secrets
-
-1. **AWS_ROLE_ARN**
-   - ARN of the IAM role for GitHub Actions
-   - Example: `arn:aws:iam::123456789012:role/github-actions-role`
-
-2. **ECR_BACKEND_REPO**
-   - Name of the backend ECR repository
-   - Get from Terraform: `terraform output ecr_backend_repository_name`
-   - Example: `saas-infra-lab-dev-backend`
-
-3. **ECR_FRONTEND_REPO**
-   - Name of the frontend ECR repository
-   - Get from Terraform: `terraform output ecr_frontend_repository_name`
-   - Example: `saas-infra-lab-dev-frontend`
-
-## Step 3: Create IAM Role for GitHub Actions
-
-### Option A: Using OIDC (Recommended)
-
-1. **Create OIDC Provider in AWS**:
-
-```bash
-aws iam create-open-id-connect-provider \
-  --url https://token.actions.githubusercontent.com \
-  --client-id-list sts.amazonaws.com \
-  --thumbprint-list 6938fd4d98bab03faadb97b34396831e3780aea1
-```
-
-2. **Create IAM Role with Trust Policy**:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": {
-        "Federated": "arn:aws:iam::YOUR_ACCOUNT_ID:oidc-provider/token.actions.githubusercontent.com"
-      },
-      "Action": "sts:AssumeRoleWithWebIdentity",
-      "Condition": {
-        "StringEquals": {
-          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
-        },
-        "StringLike": {
-          "token.actions.githubusercontent.com:sub": "repo:YOUR_GITHUB_ORG/YOUR_REPO:*"
-        }
-      }
-    }
-  ]
-}
-```
-
-3. **Attach Policies**:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Action": [
-        "ecr:GetAuthorizationToken",
-        "ecr:BatchCheckLayerAvailability",
-        "ecr:GetDownloadUrlForLayer",
-        "ecr:BatchGetImage",
-        "ecr:PutImage",
-        "ecr:InitiateLayerUpload",
-        "ecr:UploadLayerPart",
-        "ecr:CompleteLayerUpload"
-      ],
-      "Resource": "*"
-    },
-    {
-      "Effect": "Allow",
-      "Action": [
-        "eks:DescribeCluster",
-        "eks:ListClusters"
-      ],
-      "Resource": "*"
-    }
-  ]
-}
-```
-
-### Option B: Using Access Keys (Not Recommended)
-
-1. Create IAM user with programmatic access
-2. Attach policies for ECR and EKS
-3. Store access key ID and secret in GitHub Secrets
-
-## Step 4: Test the Pipeline
-
-1. **Push to main branch**:
+2. Verify Infrastructure:
    ```bash
-   git add .
-   git commit -m "Test CI/CD pipeline"
-   git push origin main
+   # Infrastructure must be deployed first
+   cd cloudnative-saas-eks/examples/dev-environment/infrastructure
+   terraform output rds_secret_arn  # Should return a secret ARN
+   
+   # Tenants must be deployed (creates analytics secrets)
+   cd ../tenants
+   terraform apply -var-file="../tenants.tfvars"
    ```
 
-2. **Check GitHub Actions**:
-   - Go to Actions tab in GitHub
-   - Watch the workflow run
-   - Check for any errors
+3. Push to main branch - deployment happens automatically
 
-3. **Verify Deployment**:
-   ```bash
-   kubectl get pods -n platform
-   kubectl get pods -n analytics
-   kubectl get pods -n data
-   ```
+## Workflows
 
-## Step 5: Access the Application
+### CI Pipeline (`ci.yml`)
+- **Triggers**: Push to `main` or `develop`, Pull requests
+- **Jobs**: Backend test, Frontend test, Docker build
+- **Duration**: ~5-8 minutes
 
-After successful deployment:
+### CD Pipeline (`cd.yml`)
+- **Triggers**: CI workflow success, Manual dispatch, Tag push
+- **Jobs**: Build backend/frontend (parallel), Cluster setup, Deploy (matrix: platform, analytics)
+- **Duration**: ~10-15 minutes
+- **Timeouts**:
+  - Backend rollout: 10 minutes (accounts for DB connection + health checks)
+  - Frontend rollout: 10 minutes
+  - Deploy step: 20 minutes (overall timeout)
 
-```bash
-# Port forward to access frontend
-kubectl port-forward -n platform service/frontend-service 8080:80
+## Timeout Configuration
 
-# Open browser: http://localhost:8080
-```
+The pipeline uses optimized timeouts to handle:
+- **Database Connection**: 15 seconds (configured in backend)
+- **Health Check Wrapper**: 18 seconds (prevents hanging)
+- **Readiness Probe**: 20 seconds (matches health check)
+- **Rollout Status**: 10 minutes (accounts for all startup phases)
 
-## Troubleshooting
-
-### Workflow Fails at "Get ECR registry"
-- Ensure Terraform infrastructure is deployed
-- Check that ECR repositories exist
-- Verify Terraform state is accessible
-
-### Workflow Fails at "Login to Amazon ECR"
-- Check AWS credentials/role permissions
-- Verify IAM role has ECR permissions
-- Check region matches (us-east-1)
-
-### Workflow Fails at "Deploy to EKS"
-- Verify kubectl can access cluster
-- Check cluster name matches Terraform output
-- Ensure namespaces exist (platform, analytics, data)
-
-### Images Not Updating
-- Check image tags in deployment manifests
-- Verify ECR push succeeded
-- Check pod image pull errors: `kubectl describe pod -n <namespace>`
-
-## Manual Deployment
-
-If you need to deploy manually:
-
-```bash
-# Get ECR repository URLs
-cd cloudnative-saas-eks/examples/dev-environment/infrastructure
-terraform output ecr_backend_repository_url
-terraform output ecr_frontend_repository_url
-
-# Update manifests with image URLs
-# Then apply
-kubectl apply -k k8s/namespace-platform
-```
-
-## Next Steps
-
-- Set up monitoring and alerting
-- Configure backup workflows
-- Add staging environment
-- Set up blue-green deployments
-
+These timeouts ensure deployments complete successfully even with slow database connections or network latency.

@@ -1,11 +1,13 @@
 import axios from 'axios';
 
-// Use relative URLs to leverage Vite proxy in development
+// Use relative URLs to leverage nginx proxy in production
+// In production, nginx proxies /api requests to the backend service
+// In development, Vite proxy handles this
 const API_URL = import.meta.env.VITE_API_URL || '';
 
 // Create axios instance
 const api = axios.create({
-  baseURL: API_URL || (import.meta.env.DEV ? '' : 'http://localhost:3000'),
+  baseURL: API_URL, // Empty string = relative URLs, which work with nginx proxy
   headers: {
     'Content-Type': 'application/json',
   },
@@ -25,10 +27,21 @@ api.interceptors.request.use(
   }
 );
 
-// Handle token expiration
+// Handle token expiration and log errors
 api.interceptors.response.use(
   (response) => response,
   (error) => {
+    console.error('API Error:', {
+      message: error.message,
+      status: error.response?.status,
+      statusText: error.response?.statusText,
+      data: error.response?.data,
+      config: {
+        url: error.config?.url,
+        method: error.config?.method,
+        baseURL: error.config?.baseURL,
+      },
+    });
     if (error.response?.status === 401) {
       localStorage.removeItem('token');
       localStorage.removeItem('user');

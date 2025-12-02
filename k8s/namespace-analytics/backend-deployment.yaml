@@ -7,7 +7,7 @@ metadata:
     app: backend
     tenant: analytics
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: backend
@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
       - name: backend
-        image: your-registry/task-management-backend:latest
+        image: task-management-backend:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 3000
@@ -33,9 +33,15 @@ spec:
         - name: PORT
           value: "3000"
         - name: DB_HOST
-          value: "postgresql-service"
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: db-host
         - name: DB_PORT
-          value: "5432"
+          valueFrom:
+            configMapKeyRef:
+              name: backend-config
+              key: db-port
         - name: DB_NAME
           valueFrom:
             configMapKeyRef:
@@ -58,27 +64,33 @@ spec:
               key: jwt-secret
         - name: METRICS_ENABLED
           value: "true"
+        - name: NODE_OPTIONS
+          value: "--max-old-space-size=600"
         resources:
           requests:
-            cpu: "100m"
+            cpu: "50m"
             memory: "256Mi"
           limits:
-            cpu: "500m"
-            memory: "512Mi"
+            cpu: "200m"
+            memory: "1Gi"
         livenessProbe:
           httpGet:
-            path: /health
+            path: /health/live
             port: 3000
           initialDelaySeconds: 30
           periodSeconds: 10
           timeoutSeconds: 5
+          failureThreshold: 3
         readinessProbe:
           httpGet:
             path: /health/ready
             port: 3000
-          initialDelaySeconds: 10
-          periodSeconds: 5
-          timeoutSeconds: 3
+            scheme: HTTP
+          initialDelaySeconds: 20
+          periodSeconds: 10
+          timeoutSeconds: 20
+          failureThreshold: 3
+          successThreshold: 1
 
 ---
 apiVersion: v1

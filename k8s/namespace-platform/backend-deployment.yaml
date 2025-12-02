@@ -7,7 +7,7 @@ metadata:
     app: backend
     tenant: platform
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: backend
@@ -18,9 +18,10 @@ spec:
         app: backend
         tenant: platform
     spec:
+      serviceAccountName: backend-sa
       containers:
       - name: backend
-        image: your-registry/task-management-backend:latest
+        image: 821368347884.dkr.ecr.us-east-1.amazonaws.com/saas-infra-lab-dev-backend:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 3000
@@ -32,53 +33,71 @@ spec:
           value: "production"
         - name: PORT
           value: "3000"
+        # Database configuration from AWS Secrets Manager
         - name: DB_HOST
-          value: "postgresql-service"
+          valueFrom:
+            secretKeyRef:
+              name: db-credentials
+              key: db-host
         - name: DB_PORT
-          value: "5432"
+          valueFrom:
+            secretKeyRef:
+              name: db-credentials
+              key: db-port
         - name: DB_NAME
           valueFrom:
-            configMapKeyRef:
-              name: backend-config
+            secretKeyRef:
+              name: db-credentials
               key: db-name
         - name: DB_USER
           valueFrom:
             secretKeyRef:
-              name: postgresql-secret
-              key: db-user
+              name: db-credentials
+              key: db-username
         - name: DB_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: postgresql-secret
+              name: db-credentials
               key: db-password
+        # Other environment variables
         - name: JWT_SECRET
           valueFrom:
             secretKeyRef:
               name: backend-secret
               key: jwt-secret
-        - name: METRICS_ENABLED
-          value: "true"
+        - name: JWT_EXPIRES_IN
+          value: "1d"
+        - name: JWT_COOKIE_EXPIRES
+          value: "30"
+        - name: NODE_OPTIONS
+          value: "--max-old-space-size=1200"
         resources:
           requests:
             cpu: "100m"
-            memory: "256Mi"
+            memory: "512Mi"
           limits:
             cpu: "500m"
-            memory: "512Mi"
+            memory: "2Gi"
         livenessProbe:
           httpGet:
-            path: /health
+            path: /health/live
             port: 3000
+            scheme: HTTP
           initialDelaySeconds: 30
           periodSeconds: 10
-          timeoutSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+          successThreshold: 1
         readinessProbe:
           httpGet:
             path: /health/ready
             port: 3000
-          initialDelaySeconds: 10
-          periodSeconds: 5
-          timeoutSeconds: 3
+            scheme: HTTP
+          initialDelaySeconds: 20
+          periodSeconds: 10
+          timeoutSeconds: 20
+          failureThreshold: 3
+          successThreshold: 1
 
 ---
 apiVersion: v1

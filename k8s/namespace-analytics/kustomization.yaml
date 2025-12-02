@@ -4,14 +4,15 @@ kind: Kustomization
 namespace: analytics
 
 resources:
-  - postgresql-deployment.yaml
+  - namespace.yaml
   - backend-deployment.yaml
   - frontend-deployment.yaml
-  - configmap.yaml
-  - secret.yaml
-  - servicemonitor.yaml
 
-commonLabels:
-  tenant: analytics
-  managed-by: terraform
+images:
+  - name: task-management-backend
+    newName: 821368347884.dkr.ecr.us-east-1.amazonaws.com/saas-infra-lab-dev-backend
+    newTag: latest
+  - name: task-management-frontend
+    newName: 821368347884.dkr.ecr.us-east-1.amazonaws.com/saas-infra-lab-dev-frontend
+    newTag: latest
 

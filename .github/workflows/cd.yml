@@ -1,195 +1,604 @@
 name: CD - Build, Push, and Deploy
 
 on:
-  push:
-    branches: [ main ]
-    tags:
-      - 'v*'
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
   workflow_dispatch:
-    inputs:
-      namespace:
-        description: 'Namespace to deploy to'
-        required: true
-        default: 'platform'
-        type: choice
-        options:
-          - platform
-          - analytics
-          - data
+  push:
+    tags: ['v*']
 
 env:
   AWS_REGION: us-east-1
+  TERRAFORM_STATE_BUCKET: saas-infra-lab-terraform-state
+  TERRAFORM_STATE_KEY: saas-infra-lab/dev/infrastructure/terraform.tfstate
 
 jobs:
-  build-and-push:
-    name: Build and Push Docker Images
+  check-ci-status:
+    name: Check CI Status
+    runs-on: ubuntu-latest
+    if: |
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success') ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+    steps:
+      - name: Verify trigger
+        run: echo "✅ Proceeding with deployment"
+
+  build-backend:
+    name: Build Backend
+    needs: [check-ci-status]
     runs-on: ubuntu-latest
     permissions:
       id-token: write
       contents: read
-    
     outputs:
-      backend-image: ${{ steps.meta-backend.outputs.tags }}
-      frontend-image: ${{ steps.meta-frontend.outputs.tags }}
-      image-tag: ${{ steps.meta-backend.outputs.version }}
-    
+      image: ${{ steps.image-info.outputs.image }}
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-    
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-        aws-region: ${{ env.AWS_REGION }}
-    
-    - name: Get ECR registry ID
-      id: ecr-registry
-      run: |
-        # Get AWS account ID (which is the ECR registry ID)
-        ECR_REGISTRY=$(aws sts get-caller-identity --query Account --output text)
-        echo "registry_id=$ECR_REGISTRY" >> $GITHUB_OUTPUT
-        echo "ECR Registry ID: $ECR_REGISTRY"
-    
-    - name: Login to Amazon ECR
-      id: login-ecr
-      uses: aws-actions/amazon-ecr-login@v2
-    
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
-    
-    - name: Extract metadata for backend
-      id: meta-backend
-      uses: docker/metadata-action@v5
-      with:
-        images: ${{ steps.ecr-registry.outputs.registry_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_BACKEND_REPO }}
-        tags: |
-          type=ref,event=branch
-          type=ref,event=pr
-          type=semver,pattern={{version}}
-          type=semver,pattern={{major}}.{{minor}}
-          type=sha,prefix={{branch}}-
-          type=raw,value=latest,enable={{is_default_branch}}
-    
-    - name: Build and push backend image
-      uses: docker/build-push-action@v5
-      with:
-        context: ./backend
-        file: ./backend/Dockerfile
-        push: true
-        tags: ${{ steps.meta-backend.outputs.tags }}
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
-    
-    - name: Extract metadata for frontend
-      id: meta-frontend
-      uses: docker/metadata-action@v5
-      with:
-        images: ${{ steps.ecr-registry.outputs.registry_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_FRONTEND_REPO }}
-        tags: |
-          type=ref,event=branch
-          type=ref,event=pr
-          type=semver,pattern={{version}}
-          type=semver,pattern={{major}}.{{minor}}
-          type=sha,prefix={{branch}}-
-          type=raw,value=latest,enable={{is_default_branch}}
-    
-    - name: Build and push frontend image
-      uses: docker/build-push-action@v5
-      with:
-        context: ./frontend
-        file: ./frontend/Dockerfile
-        push: true
-        tags: ${{ steps.meta-frontend.outputs.tags }}
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: aws-actions/amazon-ecr-login@v2
+      - uses: docker/setup-buildx-action@v3
+      - name: Get ECR registry
+        id: ecr-registry
+        run: |
+          ECR_REGISTRY=$(aws sts get-caller-identity --query Account --output text)
+          echo "registry_id=$ECR_REGISTRY" >> $GITHUB_OUTPUT
+      - name: Build and push
+        id: meta-backend
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.ecr-registry.outputs.registry_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_BACKEND_REPO }}
+          tags: |
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+      - uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          push: true
+          tags: ${{ steps.meta-backend.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Set image output
+        id: image-info
+        run: |
+          # Extract the first tag from the multiline tags output and trim whitespace
+          IMAGE=$(echo "${{ steps.meta-backend.outputs.tags }}" | head -n1 | tr -d '\n' | xargs || true)
+          if [ -z "$IMAGE" ]; then
+            echo "⚠️  Warning: Backend image output is empty, constructing from ECR..."
+            ECR_REGISTRY=$(aws sts get-caller-identity --query Account --output text)
+            IMAGE="${ECR_REGISTRY}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_BACKEND_REPO }}:latest"
+            echo "Constructed backend image: $IMAGE"
+          fi
+          echo "image=$IMAGE" >> $GITHUB_OUTPUT
+          echo "✅ Backend image: $IMAGE"
+
+  build-frontend:
+    name: Build Frontend
+    needs: [check-ci-status]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      image: ${{ steps.image-info.outputs.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: aws-actions/amazon-ecr-login@v2
+      - uses: docker/setup-buildx-action@v3
+      - name: Get ECR registry
+        id: ecr-registry
+        run: |
+          ECR_REGISTRY=$(aws sts get-caller-identity --query Account --output text)
+          echo "registry_id=$ECR_REGISTRY" >> $GITHUB_OUTPUT
+      - name: Build and push
+        id: meta-frontend
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.ecr-registry.outputs.registry_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_FRONTEND_REPO }}
+          tags: |
+            type=sha
+            type=raw,value=latest,enable={{is_default_branch}}
+      - uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: true
+          tags: ${{ steps.meta-frontend.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Set image output
+        id: image-info
+        run: |
+          # Extract the first tag from the multiline tags output and trim whitespace
+          IMAGE=$(echo "${{ steps.meta-frontend.outputs.tags }}" | head -n1 | tr -d '\n' | xargs || true)
+          if [ -z "$IMAGE" ]; then
+            echo "⚠️  Warning: Frontend image output is empty, constructing from ECR..."
+            ECR_REGISTRY=$(aws sts get-caller-identity --query Account --output text)
+            IMAGE="${ECR_REGISTRY}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_FRONTEND_REPO }}:latest"
+            echo "Constructed frontend image: $IMAGE"
+          fi
+          echo "image=$IMAGE" >> $GITHUB_OUTPUT
+          echo "✅ Frontend image: $IMAGE"
+
+  cluster-setup:
+    name: Setup Cluster
+    needs: [check-ci-status]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      cluster_name: ${{ steps.eks-cluster.outputs.cluster_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: azure/setup-kubectl@v3
+      - name: Get cluster name
+        id: eks-cluster
+        run: |
+          CLUSTER=$(aws eks list-clusters --region ${{ env.AWS_REGION }} --query 'clusters[0]' --output text)
+          echo "cluster_name=$CLUSTER" >> $GITHUB_OUTPUT
+      - name: Update kubeconfig
+        run: aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ steps.eks-cluster.outputs.cluster_name }}
+      - name: Install Helm
+        run: curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+      - name: Install CSI Driver
+        run: |
+          if ! kubectl get crd secretproviderclasses.secrets-store.csi.x-k8s.io >/dev/null 2>&1; then
+            helm repo add secrets-store-csi-driver https://kubernetes-sigs.github.io/secrets-store-csi-driver/charts
+            helm repo update
+            helm install csi-secrets-store secrets-store-csi-driver/secrets-store-csi-driver \
+              --namespace kube-system --set syncSecret.enabled=true --wait
+          fi
+          if ! kubectl get daemonset -n kube-system csi-secrets-store-provider-aws >/dev/null 2>&1; then
+            kubectl apply -f https://raw.githubusercontent.com/aws/secrets-store-csi-driver-provider-aws/main/deployment/aws-provider-installer.yaml
+            kubectl -n kube-system wait --for=condition=ready pod -l app=csi-secrets-store-provider-aws --timeout=180s
+          fi
 
   deploy:
-    name: Deploy to EKS
-    needs: build-and-push
+    name: Deploy
+    needs: [build-backend, build-frontend, cluster-setup]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       id-token: write
       contents: read
-    
     strategy:
+      fail-fast: false
       matrix:
-        namespace: [platform, analytics, data]
-    
+        namespace: [platform, analytics]
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-    
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-        aws-region: ${{ env.AWS_REGION }}
-    
-    - name: Configure kubectl
-      uses: azure/setup-kubectl@v3
-      with:
-        version: 'latest'
-    
-    - name: Get EKS cluster name
-      id: eks-cluster
-      run: |
-        # Get the first EKS cluster in the region (or use a secret if you have multiple)
-        CLUSTER_NAME=$(aws eks list-clusters --region ${{ env.AWS_REGION }} --query 'clusters[0]' --output text)
-        if [ -z "$CLUSTER_NAME" ] || [ "$CLUSTER_NAME" == "None" ]; then
-          echo "Error: No EKS clusters found in region ${{ env.AWS_REGION }}"
-          exit 1
-        fi
-        echo "cluster_name=$CLUSTER_NAME" >> $GITHUB_OUTPUT
-        echo "EKS Cluster: $CLUSTER_NAME"
-    
-    - name: Update kubeconfig
-      run: |
-        aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ steps.eks-cluster.outputs.cluster_name }}
-    
-    - name: Get ECR repository URLs
-      id: ecr-repos
-      run: |
-        # Build ECR repository URLs from secrets
-        ECR_REGISTRY=$(aws sts get-caller-identity --query Account --output text)
-        BACKEND_REPO="${ECR_REGISTRY}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_BACKEND_REPO }}"
-        FRONTEND_REPO="${ECR_REGISTRY}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_FRONTEND_REPO }}"
-        echo "backend_repo=$BACKEND_REPO" >> $GITHUB_OUTPUT
-        echo "frontend_repo=$FRONTEND_REPO" >> $GITHUB_OUTPUT
-        echo "Backend repo: $BACKEND_REPO"
-        echo "Frontend repo: $FRONTEND_REPO"
-    
-    - name: Update Kubernetes manifests with image tags
-      run: |
-        # Use commit SHA as image tag (or latest if not available)
-        IMAGE_TAG="${{ github.sha }}"
-        if [ -z "$IMAGE_TAG" ]; then
-          IMAGE_TAG="latest"
-        fi
-        
-        BACKEND_IMAGE="${{ steps.ecr-repos.outputs.backend_repo }}:$IMAGE_TAG"
-        FRONTEND_IMAGE="${{ steps.ecr-repos.outputs.frontend_repo }}:$IMAGE_TAG"
-        
-        echo "Updating manifests with:"
-        echo "  Backend: $BACKEND_IMAGE"
-        echo "  Frontend: $FRONTEND_IMAGE"
-        
-        # Update backend deployment
-        find k8s/namespace-${{ matrix.namespace }} -name "*backend-deployment.yaml" -exec sed -i "s|image:.*task-management-backend.*|image: $BACKEND_IMAGE|g" {} \;
-        
-        # Update frontend deployment
-        find k8s/namespace-${{ matrix.namespace }} -name "*frontend-deployment.yaml" -exec sed -i "s|image:.*task-management-frontend.*|image: $FRONTEND_IMAGE|g" {} \;
-    
-    - name: Deploy to ${{ matrix.namespace }} namespace
-      run: |
-        kubectl apply -k k8s/namespace-${{ matrix.namespace }}
-        kubectl rollout status deployment/backend -n ${{ matrix.namespace }} --timeout=5m || true
-        kubectl rollout status deployment/frontend -n ${{ matrix.namespace }} --timeout=5m || true
-    
-    - name: Verify deployment
-      run: |
-        echo "=== Pods in ${{ matrix.namespace }} namespace ==="
-        kubectl get pods -n ${{ matrix.namespace }}
-        echo ""
-        echo "=== Services in ${{ matrix.namespace }} namespace ==="
-        kubectl get services -n ${{ matrix.namespace }}
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: azure/setup-kubectl@v3
+      - name: Setup kubectl
+        run: |
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ needs.cluster-setup.outputs.cluster_name }}
+          echo "KUBECONFIG=$HOME/.kube/config" >> $GITHUB_ENV
+          
+
+      - name: Install tools
+        timeout-minutes: 5
+        run: |
+          set -e
+          echo "🔧 Installing required tools..."
+          sudo apt-get update && sudo apt-get install -y jq || {
+            echo "❌ Failed to install jq"
+            exit 1
+          }
+          echo "✅ jq installed"
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 || {
+            echo "❌ Failed to download yq"
+            exit 1
+          }
+          sudo chmod +x /usr/local/bin/yq || {
+            echo "❌ Failed to make yq executable"
+            exit 1
+          }
+          echo "✅ yq installed"
+          # Verify tools are available
+          jq --version
+          yq --version
+          echo "✅ All tools installed and verified"
+
+      - name: Get RDS Secret ARN
+        if: matrix.namespace == 'platform'
+        timeout-minutes: 5
+        run: |
+          set -e
+          echo "📥 Downloading Terraform state from S3..."
+          aws s3 cp "s3://${{ env.TERRAFORM_STATE_BUCKET }}/${{ env.TERRAFORM_STATE_KEY }}" /tmp/terraform.tfstate || {
+            echo "❌ Failed to download Terraform state"
+            exit 1
+          }
+          
+          echo "✅ Terraform state downloaded successfully"
+          echo "📊 Extracting RDS secret ARN..."
+          
+          RDS_SECRET_ARN=$(jq -r '.outputs.rds_secret_arn.value // empty' /tmp/terraform.tfstate || echo "")
+          
+          if [ -z "$RDS_SECRET_ARN" ] || [ "$RDS_SECRET_ARN" == "null" ] || [ "$RDS_SECRET_ARN" == "" ]; then
+            echo "❌ Error: RDS secret ARN not found in Terraform state"
+            echo "Available outputs:"
+            jq '.outputs | keys' /tmp/terraform.tfstate || echo "Could not parse outputs"
+            exit 1
+          fi
+          
+          echo "✅ RDS Secret ARN found: ${RDS_SECRET_ARN:0:50}..."
+          
+          echo "🔍 Getting AWS Account ID..."
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text || echo "")
+          
+          if [ -z "$AWS_ACCOUNT_ID" ]; then
+            echo "❌ Error: Failed to get AWS Account ID"
+            exit 1
+          fi
+          
+          echo "✅ AWS Account ID: $AWS_ACCOUNT_ID"
+          
+          echo "RDS_SECRET_ARN=$RDS_SECRET_ARN" >> $GITHUB_ENV
+          echo "AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID" >> $GITHUB_ENV
+          
+          SECRETS_FILE="k8s/namespace-${{ matrix.namespace }}/aws-secrets-manager.yaml"
+          if [ -f "$SECRETS_FILE" ]; then
+            echo "📝 Updating $SECRETS_FILE with actual values..."
+            # Escape special characters in sed replacement
+            RDS_SECRET_ARN_ESC=$(echo "$RDS_SECRET_ARN" | sed 's/[[\.*^$()+?{|]/\\&/g')
+            AWS_ACCOUNT_ID_ESC=$(echo "$AWS_ACCOUNT_ID" | sed 's/[[\.*^$()+?{|]/\\&/g')
+            sed -i "s|\${RDS_SECRET_ARN}|$RDS_SECRET_ARN_ESC|g" "$SECRETS_FILE"
+            sed -i "s|\${AWS_ACCOUNT_ID}|$AWS_ACCOUNT_ID_ESC|g" "$SECRETS_FILE"
+            echo "✅ Secrets file updated successfully"
+          else
+            echo "⚠️  Warning: $SECRETS_FILE not found"
+          fi
+          
+          echo "✅ Step completed successfully"
+
+      - name: Setup Secrets (Platform)
+        if: matrix.namespace == 'platform'
+        timeout-minutes: 10
+        run: |
+          set -e
+          echo "🔐 Setting up secrets for platform namespace..."
+          
+          # Verify environment variable is set (set in previous step via $GITHUB_ENV)
+          if [ -z "$RDS_SECRET_ARN" ]; then
+            echo "❌ Error: RDS_SECRET_ARN environment variable is not set"
+            echo "Available env vars:"
+            env | grep -i secret || echo "No secret-related env vars found"
+            exit 1
+          fi
+          
+          echo "✅ Using RDS Secret ARN: ${RDS_SECRET_ARN:0:50}..."
+          
+          echo "📦 Applying SecretProviderClass..."
+          kubectl apply -f k8s/namespace-${{ matrix.namespace }}/aws-secrets-manager.yaml || {
+            echo "❌ Failed to apply aws-secrets-manager.yaml"
+            exit 1
+          }
+          
+          echo "⏳ Waiting for secret sync (max 2 minutes)..."
+          SECRET_READY=false
+          for i in {1..60}; do
+            if kubectl get secret db-credentials -n ${{ matrix.namespace }} >/dev/null 2>&1; then
+              echo "✅ Secret db-credentials is available"
+              SECRET_READY=true
+              break
+            fi
+            echo "Waiting for secret sync... ($i/60)"
+            sleep 2
+          done
+          
+          # Create secret manually if CSI sync doesn't work
+          if [ "$SECRET_READY" != "true" ]; then
+            echo "⚠️  CSI driver did not sync secret, creating manually..."
+            SECRET_JSON=$(aws secretsmanager get-secret-value --secret-id "$RDS_SECRET_ARN" --query SecretString --output text)
+            kubectl create secret generic db-credentials -n ${{ matrix.namespace }} \
+              --from-literal=db-host=$(echo "$SECRET_JSON" | jq -r '.host') \
+              --from-literal=db-port=$(echo "$SECRET_JSON" | jq -r '.port') \
+              --from-literal=db-name=$(echo "$SECRET_JSON" | jq -r '.dbname') \
+              --from-literal=db-username=$(echo "$SECRET_JSON" | jq -r '.username') \
+              --from-literal=db-password=$(echo "$SECRET_JSON" | jq -r '.password') \
+              --dry-run=client -o yaml | kubectl apply -f - || {
+              echo "❌ Failed to create secret manually"
+              exit 1
+            }
+            echo "✅ Secret created manually"
+          fi
+          
+          echo "✅ Secrets setup completed"
+
+      - name: Setup Secrets (Analytics)
+        if: matrix.namespace == 'analytics'
+        timeout-minutes: 2
+        run: |
+          set -e
+          echo "🔐 Verifying secrets for analytics namespace..."
+          
+          # Verify postgresql-secret exists (created by Terraform)
+          if ! kubectl get secret postgresql-secret -n ${{ matrix.namespace }} >/dev/null 2>&1; then
+            echo "⚠️  Warning: postgresql-secret not found in analytics namespace"
+            echo "⚠️  This secret should be created by Terraform tenants module"
+            echo "⚠️  Run: cd tenants && terraform apply -var-file=\"../tenants.tfvars\""
+            echo "⚠️  Continuing deployment, but pods may fail without this secret..."
+          else
+            echo "✅ postgresql-secret found in analytics namespace"
+          fi
+          
+          # Verify backend-secret exists
+          if ! kubectl get secret backend-secret -n ${{ matrix.namespace }} >/dev/null 2>&1; then
+            echo "⚠️  Warning: backend-secret not found in analytics namespace"
+            echo "⚠️  This secret should be created by Terraform tenants module"
+          else
+            echo "✅ backend-secret found in analytics namespace"
+          fi
+          
+          echo "✅ Secrets verification completed"
+
+      - name: Initialize Database
+        if: matrix.namespace == 'platform'
+        timeout-minutes: 5
+        run: |
+          set -e
+          echo "🗄️  Initializing database..."
+          
+          # Check if init job already exists and completed successfully
+          if kubectl get job init-rds-database -n ${{ matrix.namespace }} >/dev/null 2>&1; then
+            JOB_STATUS=$(kubectl get job init-rds-database -n ${{ matrix.namespace }} -o jsonpath='{.status.conditions[?(@.type=="Complete")].status}' || echo "")
+            if [ "$JOB_STATUS" == "True" ]; then
+              echo "✅ Database initialization job already completed successfully"
+              echo "📋 Job logs:"
+              kubectl logs -n ${{ matrix.namespace }} -l job-name=init-rds-database --tail=10 || echo "Could not retrieve logs"
+              exit 0
+            else
+              echo "⚠️  Database initialization job exists but not completed, checking status..."
+              kubectl get job init-rds-database -n ${{ matrix.namespace }}
+              # Check if job is still running
+              JOB_ACTIVE=$(kubectl get job init-rds-database -n ${{ matrix.namespace }} -o jsonpath='{.status.active}' || echo "0")
+              if [ "$JOB_ACTIVE" != "0" ] && [ -n "$JOB_ACTIVE" ]; then
+                echo "⏳ Database initialization job is still running, waiting for completion..."
+                kubectl wait --for=condition=complete --timeout=5m job/init-rds-database -n ${{ matrix.namespace }} || {
+                  echo "❌ Database initialization job timed out or failed"
+                  kubectl logs -n ${{ matrix.namespace }} -l job-name=init-rds-database --tail=50
+                  exit 1
+                }
+                echo "✅ Database initialization job completed"
+                exit 0
+              else
+                echo "⚠️  Job exists but not active, deleting and recreating..."
+                kubectl delete job init-rds-database -n ${{ matrix.namespace }} || true
+              fi
+            fi
+          fi
+          
+          # Apply the init job
+          echo "📦 Applying database initialization job..."
+          kubectl apply -f k8s/init-db-job.yaml || {
+            echo "❌ Failed to apply init-db-job.yaml"
+            exit 1
+          }
+          
+          # Wait for job to complete
+          echo "⏳ Waiting for database initialization to complete (max 5 minutes)..."
+          if ! kubectl wait --for=condition=complete --timeout=5m job/init-rds-database -n ${{ matrix.namespace }}; then
+            echo "❌ Database initialization job failed or timed out"
+            echo ""
+            echo "=== Job Status ==="
+            kubectl get job init-rds-database -n ${{ matrix.namespace }}
+            echo ""
+            echo "=== Job Pod Status ==="
+            kubectl get pods -n ${{ matrix.namespace }} -l job-name=init-rds-database
+            echo ""
+            echo "=== Job Pod Logs ==="
+            kubectl logs -n ${{ matrix.namespace }} -l job-name=init-rds-database --tail=100 || echo "Could not retrieve logs"
+            exit 1
+          fi
+          
+          echo "✅ Database initialization completed successfully"
+          echo "📋 Final job logs:"
+          kubectl logs -n ${{ matrix.namespace }} -l job-name=init-rds-database --tail=20
+
+      - name: Remove ServiceMonitor if needed
+        timeout-minutes: 2
+        run: |
+          set +e  # Don't exit on error for this step
+          echo "🔍 Checking for ServiceMonitor CRD..."
+          if ! kubectl get crd servicemonitors.monitoring.coreos.com >/dev/null 2>&1; then
+            echo "⚠️  ServiceMonitor CRD not found, removing references..."
+            SERVICEMONITOR_FILE="k8s/namespace-${{ matrix.namespace }}/servicemonitor.yaml"
+            KUSTOM_FILE="k8s/namespace-${{ matrix.namespace }}/kustomization.yaml"
+            
+            # Remove servicemonitor.yaml file if it exists
+            if [ -f "$SERVICEMONITOR_FILE" ]; then
+              rm -f "$SERVICEMONITOR_FILE"
+              echo "✅ Removed servicemonitor.yaml file"
+            fi
+            
+            # Remove from kustomization.yaml if it exists
+            if [ -f "$KUSTOM_FILE" ]; then
+              # Try yq first, fallback to sed
+              if command -v yq >/dev/null 2>&1; then
+                yq -i 'del(.resources[] | select(. == "servicemonitor.yaml"))' "$KUSTOM_FILE" 2>/dev/null && \
+                echo "✅ Removed servicemonitor.yaml from kustomization.yaml using yq" || \
+                sed -i '/servicemonitor.yaml/d' "$KUSTOM_FILE" && \
+                echo "✅ Removed servicemonitor.yaml from kustomization.yaml using sed"
+              else
+                sed -i '/servicemonitor.yaml/d' "$KUSTOM_FILE" && \
+                echo "✅ Removed servicemonitor.yaml from kustomization.yaml using sed"
+              fi
+            fi
+            echo "✅ ServiceMonitor references removed"
+          else
+            echo "✅ ServiceMonitor CRD exists, keeping manifest"
+          fi
+          set -e  # Re-enable exit on error
+
+      - name: Update image tags
+        timeout-minutes: 5
+        run: |
+          set -e
+          BACKEND_IMAGE="${{ needs.build-backend.outputs.image }}"
+          FRONTEND_IMAGE="${{ needs.build-frontend.outputs.image }}"
+          
+          echo "📦 Received image values:"
+          echo "  Backend: '$BACKEND_IMAGE'"
+          echo "  Frontend: '$FRONTEND_IMAGE'"
+          
+          # Fallback: construct image names if outputs are empty
+          ECR_REGISTRY=$(aws sts get-caller-identity --query Account --output text)
+          
+          if [ -z "$BACKEND_IMAGE" ] || [ "$BACKEND_IMAGE" == "" ]; then
+            echo "⚠️  Backend image output is empty, constructing from ECR..."
+            BACKEND_IMAGE="${ECR_REGISTRY}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_BACKEND_REPO }}:latest"
+            echo "✅ Constructed backend image: $BACKEND_IMAGE"
+          fi
+          
+          if [ -z "$FRONTEND_IMAGE" ] || [ "$FRONTEND_IMAGE" == "" ]; then
+            echo "⚠️  Frontend image output is empty, constructing from ECR..."
+            FRONTEND_IMAGE="${ECR_REGISTRY}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_FRONTEND_REPO }}:latest"
+            echo "✅ Constructed frontend image: $FRONTEND_IMAGE"
+          fi
+          
+          # Final validation
+          if [ -z "$BACKEND_IMAGE" ] || [ "$BACKEND_IMAGE" == "" ]; then
+            echo "❌ Error: Backend image is still empty after fallback"
+            exit 1
+          fi
+          
+          if [ -z "$FRONTEND_IMAGE" ] || [ "$FRONTEND_IMAGE" == "" ]; then
+            echo "❌ Error: Frontend image is still empty after fallback"
+            exit 1
+          fi
+          
+          # Extract image name and tag from full image path
+          BACKEND_NAME=$(echo "$BACKEND_IMAGE" | cut -d: -f1)
+          BACKEND_TAG=$(echo "$BACKEND_IMAGE" | cut -d: -f2)
+          FRONTEND_NAME=$(echo "$FRONTEND_IMAGE" | cut -d: -f1)
+          FRONTEND_TAG=$(echo "$FRONTEND_IMAGE" | cut -d: -f2)
+          
+          echo "📊 Parsed images:"
+          echo "  Backend: $BACKEND_NAME:$BACKEND_TAG"
+          echo "  Frontend: $FRONTEND_NAME:$FRONTEND_TAG"
+          
+          # Update kustomization.yaml with the correct image tags
+          KUSTOM_FILE="k8s/namespace-${{ matrix.namespace }}/kustomization.yaml"
+          if [ -f "$KUSTOM_FILE" ]; then
+            echo "📝 Updating kustomization.yaml with new image tags..."
+            # Update backend image (yq v4 syntax)
+            yq -i ".images[0].newName = \"$BACKEND_NAME\"" "$KUSTOM_FILE" || {
+              echo "❌ Failed to update backend image name"
+              exit 1
+            }
+            yq -i ".images[0].newTag = \"$BACKEND_TAG\"" "$KUSTOM_FILE" || {
+              echo "❌ Failed to update backend image tag"
+              exit 1
+            }
+            # Update frontend image
+            yq -i ".images[1].newName = \"$FRONTEND_NAME\"" "$KUSTOM_FILE" || {
+              echo "❌ Failed to update frontend image name"
+              exit 1
+            }
+            yq -i ".images[1].newTag = \"$FRONTEND_TAG\"" "$KUSTOM_FILE" || {
+              echo "❌ Failed to update frontend image tag"
+              exit 1
+            }
+            echo "✅ Kustomization updated successfully"
+          else
+            echo "⚠️  Warning: kustomization.yaml not found, updating deployment files directly"
+            # Fallback: update deployment files directly
+            if [ -f "k8s/namespace-${{ matrix.namespace }}/backend-deployment.yaml" ]; then
+              sed -i "s|image: task-management-backend.*|image: $BACKEND_IMAGE|g" "k8s/namespace-${{ matrix.namespace }}/backend-deployment.yaml"
+            fi
+            if [ -f "k8s/namespace-${{ matrix.namespace }}/frontend-deployment.yaml" ]; then
+              sed -i "s|image: task-management-frontend.*|image: $FRONTEND_IMAGE|g" "k8s/namespace-${{ matrix.namespace }}/frontend-deployment.yaml"
+            fi
+          fi
+          echo "✅ Image tags updated successfully"
+
+      - name: Deploy
+        timeout-minutes: 20
+        run: |
+          set -e
+          echo "🚀 Deploying to ${{ matrix.namespace }} namespace..."
+          kubectl apply -k k8s/namespace-${{ matrix.namespace }} || {
+            echo "❌ Failed to apply kustomization"
+            exit 1
+          }
+          
+          echo "⏳ Waiting 10 seconds for pods to be created..."
+          sleep 10
+          
+          echo "📦 Checking pod status..."
+          kubectl get pods -n ${{ matrix.namespace }} -o wide
+          
+          echo "⏳ Waiting for backend deployment..."
+          # Increased timeout to 10m to account for database connection timeouts and health checks
+          # Database connection: 15s timeout, readiness probe: 20s initial + up to 3 failures (10s each)
+          if ! kubectl rollout status deployment/backend -n ${{ matrix.namespace }} --timeout=10m; then
+            echo "❌ Backend deployment failed or timed out"
+            echo ""
+            echo "=== Backend Deployment Details ==="
+            kubectl describe deployment backend -n ${{ matrix.namespace }}
+            echo ""
+            echo "=== Backend Pod Status ==="
+            kubectl get pods -n ${{ matrix.namespace }} -l app=backend
+            echo ""
+            echo "=== Backend Pod Events ==="
+            for pod in $(kubectl get pods -n ${{ matrix.namespace }} -l app=backend -o jsonpath='{.items[*].metadata.name}'); do
+              echo "Pod: $pod"
+              kubectl describe pod "$pod" -n ${{ matrix.namespace }} | tail -20
+              echo ""
+              echo "Pod logs:"
+              kubectl logs "$pod" -n ${{ matrix.namespace }} --tail=50 || echo "Could not retrieve logs"
+              echo "---"
+            done
+            exit 1
+          fi
+          
+          echo "⏳ Waiting for frontend deployment..."
+          # Increased timeout to 10m for consistency and to handle slow image pulls
+          if ! kubectl rollout status deployment/frontend -n ${{ matrix.namespace }} --timeout=10m; then
+            echo "❌ Frontend deployment failed or timed out"
+            echo ""
+            echo "=== Frontend Deployment Details ==="
+            kubectl describe deployment frontend -n ${{ matrix.namespace }}
+            echo ""
+            echo "=== Frontend Pod Status ==="
+            kubectl get pods -n ${{ matrix.namespace }} -l app=frontend
+            echo ""
+            echo "=== Frontend Pod Events ==="
+            for pod in $(kubectl get pods -n ${{ matrix.namespace }} -l app=frontend -o jsonpath='{.items[*].metadata.name}'); do
+              echo "Pod: $pod"
+              kubectl describe pod "$pod" -n ${{ matrix.namespace }} | tail -20
+              echo ""
+              echo "Pod logs:"
+              kubectl logs "$pod" -n ${{ matrix.namespace }} --tail=50 || echo "Could not retrieve logs"
+              echo "---"
+            done
+            exit 1
+          fi
+          
+          echo "✅ Deployment completed successfully"
+
+      - name: Verify
+        timeout-minutes: 2
+        run: |
+          set -e
+          echo "🔍 Verifying deployment..."
+          kubectl get pods -n ${{ matrix.namespace }}
+          kubectl get services -n ${{ matrix.namespace }}
+          echo "✅ Verification complete"
