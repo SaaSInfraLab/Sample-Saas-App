@@ -221,151 +221,11 @@ jobs:
             kubectl -n kube-system wait --for=condition=ready pod -l app=csi-secrets-store-provider-aws --timeout=180s
           fi
 
-  setup-secrets:
-    name: Setup Secrets
+  setup-shared-secrets:
+    name: Setup Shared Secrets for Platform & Analytics
     needs: [build-backend, build-frontend, cluster-setup]
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-      - uses: azure/setup-kubectl@v3
-      - name: Setup kubectl
-        run: |
-          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ needs.cluster-setup.outputs.cluster_name }}
-          echo "KUBECONFIG=$HOME/.kube/config" >> $GITHUB_ENV
-
-      - name: Install tools
-        timeout-minutes: 5
-        run: |
-          set -e
-          echo "🔧 Installing required tools..."
-          sudo apt-get update && sudo apt-get install -y jq || {
-            echo "❌ Failed to install jq"
-            exit 1
-          }
-          echo "✅ jq installed"
-          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 || {
-            echo "❌ Failed to download yq"
-            exit 1
-          }
-          sudo chmod +x /usr/local/bin/yq || {
-            echo "❌ Failed to make yq executable"
-            exit 1
-          }
-          echo "✅ yq installed"
-          # Verify tools are available
-          jq --version
-          yq --version
-          echo "✅ All tools installed and verified"
-
-      - name: Setup Secrets for Platform Namespace
-        timeout-minutes: 15
-        run: |
-          set -e
-          echo "🔐 Setting up secrets for platform namespace..."
-          
-          echo "📥 Downloading Terraform state from S3..."
-          aws s3 cp "s3://${{ env.TERRAFORM_STATE_BUCKET }}/${{ env.TERRAFORM_STATE_KEY }}" /tmp/terraform.tfstate || {
-            echo "❌ Failed to download Terraform state"
-            exit 1
-          }
-          
-          echo "✅ Terraform state downloaded successfully"
-          echo "📊 Extracting RDS secret ARN..."
-          
-          RDS_SECRET_ARN=$(jq -r '.outputs.rds_secret_arn.value // empty' /tmp/terraform.tfstate || echo "")
-          
-          if [ -z "$RDS_SECRET_ARN" ] || [ "$RDS_SECRET_ARN" == "null" ] || [ "$RDS_SECRET_ARN" == "" ]; then
-            echo "❌ Error: RDS secret ARN not found in Terraform state"
-            echo "Available outputs:"
-            jq '.outputs | keys' /tmp/terraform.tfstate || echo "Could not parse outputs"
-            exit 1
-          fi
-          
-          echo "✅ RDS Secret ARN found: ${RDS_SECRET_ARN:0:50}..."
-          
-          echo "🔍 Getting AWS Account ID..."
-          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text || echo "")
-          
-          if [ -z "$AWS_ACCOUNT_ID" ]; then
-            echo "❌ Error: Failed to get AWS Account ID"
-            exit 1
-          fi
-          
-          echo "✅ AWS Account ID: $AWS_ACCOUNT_ID"
-          
-          SECRETS_FILE="k8s/namespace-platform/aws-secrets-manager.yaml"
-          if [ -f "$SECRETS_FILE" ]; then
-            echo "📝 Updating $SECRETS_FILE with actual values..."
-            # Escape special characters in sed replacement
-            RDS_SECRET_ARN_ESC=$(echo "$RDS_SECRET_ARN" | sed 's/[[\.*^$()+?{|]/\\&/g')
-            AWS_ACCOUNT_ID_ESC=$(echo "$AWS_ACCOUNT_ID" | sed 's/[[\.*^$()+?{|]/\\&/g')
-            sed -i "s|\${RDS_SECRET_ARN}|$RDS_SECRET_ARN_ESC|g" "$SECRETS_FILE"
-            sed -i "s|\${AWS_ACCOUNT_ID}|$AWS_ACCOUNT_ID_ESC|g" "$SECRETS_FILE"
-            echo "✅ Secrets file updated successfully"
-          else
-            echo "⚠️  Warning: $SECRETS_FILE not found"
-          fi
-          
-          echo "📦 Applying SecretProviderClass..."
-          kubectl apply -f k8s/namespace-platform/aws-secrets-manager.yaml || {
-            echo "❌ Failed to apply aws-secrets-manager.yaml"
-            exit 1
-          }
-          
-          echo "⏳ Waiting for secret sync (max 2 minutes)..."
-          SECRET_READY=false
-          for i in {1..60}; do
-            if kubectl get secret db-credentials -n platform >/dev/null 2>&1; then
-              echo "✅ Secret db-credentials is available"
-              SECRET_READY=true
-              break
-            fi
-            echo "Waiting for secret sync... ($i/60)"
-            sleep 2
-          done
-          
-          # Create secret manually if CSI sync doesn't work
-          if [ "$SECRET_READY" != "true" ]; then
-            echo "⚠️  CSI driver did not sync secret, creating manually..."
-            SECRET_JSON=$(aws secretsmanager get-secret-value --secret-id "$RDS_SECRET_ARN" --query SecretString --output text)
-            kubectl create secret generic db-credentials -n platform \
-              --from-literal=db-host=$(echo "$SECRET_JSON" | jq -r '.host') \
-              --from-literal=db-port=$(echo "$SECRET_JSON" | jq -r '.port') \
-              --from-literal=db-name=$(echo "$SECRET_JSON" | jq -r '.dbname') \
-              --from-literal=db-username=$(echo "$SECRET_JSON" | jq -r '.username') \
-              --from-literal=db-password=$(echo "$SECRET_JSON" | jq -r '.password') \
-              --dry-run=client -o yaml | kubectl apply -f - || {
-              echo "❌ Failed to create secret manually"
-              exit 1
-            }
-            echo "✅ Secret created manually"
-          fi
-          
-          echo "✅ Platform namespace secrets setup completed"
-
-      - name: Verify All Secrets Ready
-        timeout-minutes: 1
-        run: |
-          set -e
-          echo "✅ Verifying all secrets are ready..."
-          echo "Platform namespace secrets:"
-          kubectl get secrets -n platform | grep -E "(db-credentials)" || echo "⚠️  db-credentials not found"
-          echo ""
-          echo "✅ Platform namespace secrets verified"
-
-  setup-analytics-secrets:
-    name: Setup Analytics Secrets
-    needs: [build-backend, build-frontend, cluster-setup]
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     permissions:
       id-token: write
       contents: read
@@ -388,19 +248,19 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Fetch and apply analytics secrets
+      - name: Fetch and apply secrets to both namespaces
         run: |
           set -e
-          echo "🔐 Setting up secrets for analytics namespace..."
+          echo "🔐 Setting up shared secrets for platform and analytics namespaces..."
 
-          # Use a stable secret name instead of ARN
-          ANALYTICS_SECRET_NAME="analytics/db-credentials"
+          # Use the shared secret ARN
+          SHARED_SECRET_ARN="saas-infra-lab-dev-rds-credentials-8168d27041b1556b"
 
-          echo "✅ Using Analytics Secret Name: $ANALYTICS_SECRET_NAME"
+          echo "✅ Using Shared Secret ARN: $SHARED_SECRET_ARN"
 
           # Pull secret JSON from AWS Secrets Manager
           SECRET_JSON=$(aws secretsmanager get-secret-value \
-            --secret-id "$ANALYTICS_SECRET_NAME" \
+            --secret-id "$SHARED_SECRET_ARN" \
             --query SecretString --output text)
 
           if [ -z "$SECRET_JSON" ] || [ "$SECRET_JSON" == "null" ]; then
@@ -409,6 +269,19 @@ jobs:
           fi
 
           echo "✅ Secret retrieved successfully"
+
+          # Get JWT secret - try from secret JSON, GitHub secret, or use default
+          JWT_SECRET=""
+          if echo "$SECRET_JSON" | jq -e '.jwt' >/dev/null 2>&1; then
+            JWT_SECRET=$(echo "$SECRET_JSON" | jq -r '.jwt')
+            echo "✅ JWT secret found in shared secret"
+          elif [ -n "${{ secrets.SHARED_JWT_SECRET }}" ] && [ "${{ secrets.SHARED_JWT_SECRET }}" != "" ]; then
+            JWT_SECRET="${{ secrets.SHARED_JWT_SECRET }}"
+            echo "✅ JWT secret found in GitHub secrets"
+          else
+            JWT_SECRET="dev-jwt-secret-key-change-for-production-use-strong-random-key"
+            echo "⚠️  Using default JWT secret"
+          fi
 
           # Validate required fields exist in secret JSON
           if ! echo "$SECRET_JSON" | jq -e '.username' >/dev/null 2>&1; then
@@ -419,29 +292,34 @@ jobs:
             echo "❌ Error: Secret JSON missing 'password' field"
             exit 1
           fi
-          if ! echo "$SECRET_JSON" | jq -e '.jwt' >/dev/null 2>&1; then
-            echo "❌ Error: Secret JSON missing 'jwt' field"
-            exit 1
-          fi
 
-          # Create/update postgresql-secret
-          echo "📦 Creating/updating postgresql-secret..."
-          kubectl create secret generic postgresql-secret -n analytics \
-            --from-literal=db-user=$(echo "$SECRET_JSON" | jq -r '.username') \
-            --from-literal=db-password=$(echo "$SECRET_JSON" | jq -r '.password') \
-            --dry-run=client -o yaml | kubectl apply -f -
+          # Apply to both namespaces
+          for ns in platform analytics; do
+            echo "📦 Applying secrets to namespace: $ns"
 
-          # Create/update backend-secret
-          echo "📦 Creating/updating backend-secret..."
-          kubectl create secret generic backend-secret -n analytics \
-            --from-literal=jwt-secret=$(echo "$SECRET_JSON" | jq -r '.jwt') \
-            --dry-run=client -o yaml | kubectl apply -f -
+            kubectl create secret generic postgresql-secret -n $ns \
+              --from-literal=db-user=$(echo "$SECRET_JSON" | jq -r '.username') \
+              --from-literal=db-password=$(echo "$SECRET_JSON" | jq -r '.password') \
+              --dry-run=client -o yaml | kubectl apply -f - || {
+              echo "❌ Failed to create/update postgresql-secret in $ns namespace"
+              exit 1
+            }
 
-          echo "✅ Analytics secrets setup completed"
+            kubectl create secret generic backend-secret -n $ns \
+              --from-literal=jwt-secret="$JWT_SECRET" \
+              --dry-run=client -o yaml | kubectl apply -f - || {
+              echo "❌ Failed to create/update backend-secret in $ns namespace"
+              exit 1
+            }
+
+            echo "✅ Secrets applied to $ns namespace"
+          done
+
+          echo "🎉 Shared secrets setup completed for both namespaces"
 
   deploy:
     name: Deploy
-    needs: [build-backend, build-frontend, cluster-setup, setup-secrets, setup-analytics-secrets]
+    needs: [build-backend, build-frontend, cluster-setup, setup-shared-secrets]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
