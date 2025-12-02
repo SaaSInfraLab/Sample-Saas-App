@@ -2,9 +2,6 @@ const express = require('express');
 const router = express.Router();
 const { pool, checkPoolHealth, connectWithRetry, isConnected } = require('../config/database');
 
-/**
- * Execute query with proper timeout and cancellation
- */
 async function queryWithTimeout(query, params = [], timeoutMs = 3000) {
   const client = await pool.connect();
   let timeoutId;
@@ -28,9 +25,6 @@ async function queryWithTimeout(query, params = [], timeoutMs = 3000) {
   }
 }
 
-/**
- * Health check endpoint
- */
 router.get('/', async (req, res) => {
   try {
     // Check database connection with timeout
@@ -43,8 +37,6 @@ router.get('/', async (req, res) => {
       database: 'connected',
     });
   } catch (error) {
-    // Return 200 even if DB is down - app is still running
-    // This prevents Kubernetes from killing the pod
     console.error('Health check failed:', error.message);
     res.status(200).json({
       status: 'degraded',
@@ -56,25 +48,19 @@ router.get('/', async (req, res) => {
   }
 });
 
-/**
- * Readiness check endpoint
- */
 router.get('/ready', async (req, res) => {
-  const READINESS_TIMEOUT = 18000; // 18 seconds - slightly less than probe timeout of 20s
+  const READINESS_TIMEOUT = 18000;
   let timeoutId;
 
   try {
     const healthCheckPromise = (async () => {
-      // Check pool state first
       if (!isConnected) {
-        console.log('Pool not connected, attempting to reconnect...');
         const connected = await connectWithRetry(3);
         if (!connected) {
           return false;
         }
       }
       
-      // Check database connection with timeout (3s for faster failure detection)
       await queryWithTimeout('SELECT 1', [], 3000);
       return true;
     })();
@@ -111,9 +97,6 @@ router.get('/ready', async (req, res) => {
   }
 });
 
-/**
- * Liveness check endpoint
- */
 router.get('/live', (req, res) => {
   res.json({
     status: 'alive',

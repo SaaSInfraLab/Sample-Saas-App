@@ -21,13 +21,9 @@ docker-compose down
 
 **First Steps:**
 1. Open http://localhost:8080
-2. Click "Sign Up"
-3. Register with:
-   - Email: test@platform.com
-   - Password: password123
-   - Name: Test User
-   - Tenant: Platform Team
-4. Create your first task!
+2. Click "Sign Up" and create an account
+3. Select a tenant (Platform Team, Analytics Team, or Data Team)
+4. Create your first task
 
 ## Option 2: Manual Setup (Without Docker for Frontend/Backend)
 
@@ -86,16 +82,8 @@ Frontend will run on: http://localhost:5173
 ### Check Backend
 
 ```bash
-# General health check
 curl http://localhost:3000/health
-
-# Should return:
-# {"status":"healthy","timestamp":"...","uptime":...,"database":"connected"}
-
-# Liveness check (always returns 200)
 curl http://localhost:3000/health/live
-
-# Readiness check (checks database connection)
 curl http://localhost:3000/health/ready
 ```
 
@@ -147,8 +135,8 @@ lsof -ti:3000 | xargs kill -9
 ### Frontend Can't Connect to Backend
 
 1. Verify backend is running: `curl http://localhost:3000/health`
-2. Check browser console for CORS errors
-3. Verify `VITE_API_URL` in frontend (should be `http://localhost:3000` for manual setup)
+2. Check browser console for errors
+3. Verify frontend proxy configuration in `vite.config.js`
 
 ### Database Migrations Not Running
 
@@ -163,18 +151,9 @@ docker-compose exec postgres psql -U taskuser -d taskdb -f /docker-entrypoint-in
 
 ## Development Tips
 
-- **Hot Reload**: Both backend (nodemon) and frontend (Vite) support hot reload
-- **View Logs**: `docker-compose logs -f` to see all logs
-- **Reset Database**: `docker-compose down -v` (removes all data)
-- **Restart Services**: `docker-compose restart backend frontend`
+- Hot reload supported for both backend and frontend
+- View logs: `docker-compose logs -f`
+- Reset database: `docker-compose down -v`
+- Restart services: `docker-compose restart backend frontend`
 
-## Next Steps
-
-Once running locally:
-1. Test user registration and login
-2. Create tasks in different tenants
-3. Verify tenant isolation
-4. Check resource usage display
-5. Test API endpoints
-
-For deployment to EKS, see [CI_CD_SETUP.md](CI_CD_SETUP.md).
+For EKS deployment, see [CI_CD_SETUP.md](CI_CD_SETUP.md).

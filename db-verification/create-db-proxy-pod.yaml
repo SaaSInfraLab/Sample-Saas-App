@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: db-proxy
+  namespace: platform
+spec:
+  restartPolicy: Never
+  containers:
+  - name: socat
+    image: alpine/socat:latest
+    command:
+    - /bin/sh
+    - -c
+    - |
+      PGHOST=$(cat /etc/db-secret/db-host)
+      exec socat TCP-LISTEN:5432,fork,reuseaddr TCP:$PGHOST:5432
+    ports:
+    - containerPort: 5432
+      name: postgres
+    resources:
+      requests:
+        cpu: "50m"
+        memory: "64Mi"
+      limits:
+        cpu: "100m"
+        memory: "128Mi"
+    volumeMounts:
+    - name: db-secret
+      mountPath: /etc/db-secret
+      readOnly: true
+  volumes:
+  - name: db-secret
+    secret:
+      secretName: db-credentials
+

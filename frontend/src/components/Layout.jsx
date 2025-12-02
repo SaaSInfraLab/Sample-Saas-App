@@ -13,7 +13,7 @@ function Layout({ children }) {
     <div className="layout">
       <header className="header">
         <div className="header-content">
-          <h1>Task Management SaaS</h1>
+          <h1>Task Management Sample App</h1>
           <div className="header-right">
             {tenantInfo && (
               <span className="tenant-name">

@@ -33,7 +33,6 @@ spec:
           value: "production"
         - name: PORT
           value: "3000"
-        # Database configuration from AWS Secrets Manager
         - name: DB_HOST
           valueFrom:
             secretKeyRef:
@@ -59,7 +58,6 @@ spec:
             secretKeyRef:
               name: db-credentials
               key: db-password
-        # Other environment variables
         - name: JWT_SECRET
           valueFrom:
             secretKeyRef:

@@ -1,7 +1,7 @@
 {
   "name": "task-management-backend",
   "version": "1.0.0",
-  "description": "Task Management SaaS Backend API",
+  "description": "Task Management Sample App Backend API",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",

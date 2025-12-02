@@ -9,7 +9,7 @@ function Login() {
     email: '',
     password: '',
     name: '',
-    tenantId: 'platform', // Default tenant
+    tenantId: 'platform',
   });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -36,11 +36,7 @@ function Login() {
       login(response.data.user, response.data.token);
       window.location.href = '/';
     } catch (err) {
-      console.error('Auth error:', err);
-      console.error('Error response:', err.response);
-      console.error('Error message:', err.message);
       const errorMessage = err.response?.data?.error || err.message || 'An error occurred. Please try again.';
-      console.error('Setting error message:', errorMessage);
       setError(errorMessage);
     } finally {
       setLoading(false);

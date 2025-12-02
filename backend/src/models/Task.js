@@ -1,12 +1,4 @@
-/**
- * Task Model
- * Handles all database operations for tasks within a tenant schema
- */
-
 class Task {
-  /**
-   * Get all tasks for a tenant
-   */
   static async findAll(tenantQuery, filters = {}) {
     let query = 'SELECT * FROM tasks WHERE 1=1';
     const params = [];
@@ -30,18 +22,12 @@ class Task {
     return result.rows;
   }
 
-  /**
-   * Get task by ID
-   */
   static async findById(tenantQuery, taskId) {
     const query = 'SELECT * FROM tasks WHERE id = $1';
     const result = await tenantQuery(query, [taskId]);
     return result.rows[0] || null;
   }
 
-  /**
-   * Create new task
-   */
   static async create(tenantQuery, taskData) {
     const {
       title,
@@ -63,9 +49,6 @@ class Task {
     return result.rows[0];
   }
 
-  /**
-   * Update task
-   */
   static async update(tenantQuery, taskId, taskData) {
     const updates = [];
     const params = [];
@@ -119,18 +102,12 @@ class Task {
     return result.rows[0] || null;
   }
 
-  /**
-   * Delete task
-   */
   static async delete(tenantQuery, taskId) {
     const query = 'DELETE FROM tasks WHERE id = $1 RETURNING *';
     const result = await tenantQuery(query, [taskId]);
     return result.rows[0] || null;
   }
 
-  /**
-   * Get task statistics for a tenant
-   */
   static async getStatistics(tenantQuery) {
     const query = `
       SELECT 

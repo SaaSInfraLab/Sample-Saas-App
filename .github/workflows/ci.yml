@@ -58,55 +58,140 @@ jobs:
       working-directory: ./frontend
       run: npm run lint || echo "No lint script configured"
 
-  docker-build:
+  security-scan:
+    name: Security & Code Quality Checks
     runs-on: ubuntu-latest
-    needs: [backend-test, frontend-test]
-    permissions:
-      id-token: write
-      contents: read
     steps:
     - uses: actions/checkout@v4
-    
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
       with:
-        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-        aws-region: ${{ env.AWS_REGION }}
+        fetch-depth: 0
     
-    - name: Get ECR registry ID
-      id: ecr-registry
+    - name: Secret Scanning
+      uses: gitleaks/gitleaks-action@v2
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      continue-on-error: true
+    
+    - name: Check for Hardcoded Secrets
       run: |
-        ECR_REGISTRY=$(aws sts get-caller-identity --query Account --output text)
-        echo "registry_id=$ECR_REGISTRY" >> $GITHUB_OUTPUT
-        echo "ECR Registry ID: $ECR_REGISTRY"
+        echo "🔍 Scanning for hardcoded secrets and credentials..."
+        FOUND_ISSUES=0
+        
+        # Check for common secret patterns
+        if grep -r -i -E "(password|secret|api[_-]?key|token|credential)\s*[=:]\s*['\"][^'\"]{8,}" \
+          --include="*.js" --include="*.jsx" --include="*.ts" --include="*.tsx" \
+          --exclude-dir=node_modules --exclude-dir=.git backend/ frontend/ 2>/dev/null | \
+          grep -v "process.env" | grep -v "import.meta.env" | grep -v "localhost" | grep -v "changeme" | grep -v "dev-secret"; then
+          echo "❌ Found potential hardcoded secrets!"
+          grep -r -i -E "(password|secret|api[_-]?key|token|credential)\s*[=:]\s*['\"][^'\"]{8,}" \
+            --include="*.js" --include="*.jsx" --include="*.ts" --include="*.tsx" \
+            --exclude-dir=node_modules --exclude-dir=.git backend/ frontend/ 2>/dev/null | \
+            grep -v "process.env" | grep -v "import.meta.env" | grep -v "localhost" | grep -v "changeme" | grep -v "dev-secret" || true
+          FOUND_ISSUES=1
+        else
+          echo "✅ No hardcoded secrets found"
+        fi
+        
+        # Check for AWS keys
+        if grep -r -E "(AKIA[0-9A-Z]{16}|aws_access_key|aws_secret_key)" \
+          --include="*.js" --include="*.jsx" --include="*.ts" --include="*.tsx" \
+          --exclude-dir=node_modules --exclude-dir=.git backend/ frontend/ 2>/dev/null; then
+          echo "❌ Found potential AWS credentials!"
+          FOUND_ISSUES=1
+        fi
+        
+        # Check for database connection strings with passwords
+        if grep -r -i -E "(postgresql://|mongodb://|mysql://).*[:@].*[:@]" \
+          --include="*.js" --include="*.jsx" --include="*.ts" --include="*.tsx" \
+          --exclude-dir=node_modules --exclude-dir=.git backend/ frontend/ 2>/dev/null | \
+          grep -v "localhost" | grep -v "process.env"; then
+          echo "❌ Found potential hardcoded database connection strings!"
+          FOUND_ISSUES=1
+        fi
+        
+        if [ $FOUND_ISSUES -eq 1 ]; then
+          echo "❌ Security scan failed: Hardcoded secrets detected"
+          exit 1
+        fi
     
-    - name: Login to Amazon ECR
-      uses: aws-actions/amazon-ecr-login@v2
+    - name: Check for Hardcoded URLs and Endpoints
+      run: |
+        echo "🔍 Checking for hardcoded URLs and endpoints..."
+        FOUND_ISSUES=0
+        
+        # Check for hardcoded AWS endpoints (should use environment variables)
+        if grep -r -E "(\.amazonaws\.com|\.rds\.amazonaws\.com|\.eks\.amazonaws\.com)" \
+          --include="*.js" --include="*.jsx" --include="*.ts" --include="*.tsx" \
+          --exclude-dir=node_modules --exclude-dir=.git backend/ frontend/ 2>/dev/null | \
+          grep -v "process.env" | grep -v "import.meta.env" | grep -v "\.md" | grep -v "README"; then
+          echo "⚠️  Warning: Found hardcoded AWS endpoints (consider using environment variables)"
+          grep -r -E "(\.amazonaws\.com|\.rds\.amazonaws\.com|\.eks\.amazonaws\.com)" \
+            --include="*.js" --include="*.jsx" --include="*.ts" --include="*.tsx" \
+            --exclude-dir=node_modules --exclude-dir=.git backend/ frontend/ 2>/dev/null | \
+            grep -v "process.env" | grep -v "import.meta.env" | grep -v "\.md" | grep -v "README" || true
+        else
+          echo "✅ No hardcoded AWS endpoints found"
+        fi
+        
+        # Check for hardcoded IP addresses (except localhost)
+        if grep -r -E "\b([0-9]{1,3}\.){3}[0-9]{1,3}\b" \
+          --include="*.js" --include="*.jsx" --include="*.ts" --include="*.tsx" \
+          --exclude-dir=node_modules --exclude-dir=.git backend/ frontend/ 2>/dev/null | \
+          grep -v "127.0.0.1" | grep -v "0.0.0.0" | grep -v "localhost" | grep -v "process.env"; then
+          echo "⚠️  Warning: Found hardcoded IP addresses"
+        else
+          echo "✅ No hardcoded IP addresses found"
+        fi
     
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+    - name: Check for Console Logs in Production Code
+      run: |
+        echo "🔍 Checking for console.log statements..."
+        CONSOLE_LOGS=$(find backend/src frontend/src -type f \( -name "*.js" -o -name "*.jsx" \) \
+          -not -path "*/node_modules/*" -exec grep -l "console\.log" {} \; 2>/dev/null | wc -l || echo "0")
+        
+        if [ "$CONSOLE_LOGS" -gt 0 ]; then
+          echo "⚠️  Warning: Found console.log statements in source code"
+          echo "Consider removing or using a proper logging library for production"
+          find backend/src frontend/src -type f \( -name "*.js" -o -name "*.jsx" \) \
+            -not -path "*/node_modules/*" -exec grep -Hn "console\.log" {} \; 2>/dev/null | head -10 || true
+        else
+          echo "✅ No console.log statements found"
+        fi
     
-    - name: Build and push backend image
-      uses: docker/build-push-action@v5
-      with:
-        context: ./backend
-        file: ./backend/Dockerfile
-        push: true
-        tags: |
-          ${{ steps.ecr-registry.outputs.registry_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_BACKEND_REPO }}:ci-${{ github.sha }}
-          ${{ steps.ecr-registry.outputs.registry_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_BACKEND_REPO }}:ci-latest
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
+    - name: Check for TODO/FIXME Comments
+      run: |
+        echo "🔍 Checking for TODO/FIXME comments..."
+        TODO_COUNT=$(grep -r -i -E "(TODO|FIXME|XXX|HACK)" \
+          --include="*.js" --include="*.jsx" --include="*.ts" --include="*.tsx" \
+          --exclude-dir=node_modules --exclude-dir=.git backend/src frontend/src 2>/dev/null | wc -l || echo "0")
+        
+        if [ "$TODO_COUNT" -gt 0 ]; then
+          echo "ℹ️  Found $TODO_COUNT TODO/FIXME comments (informational only)"
+          grep -r -i -E "(TODO|FIXME|XXX|HACK)" \
+            --include="*.js" --include="*.jsx" --include="*.ts" --include="*.tsx" \
+            --exclude-dir=node_modules --exclude-dir=.git backend/src frontend/src 2>/dev/null | head -5 || true
+        else
+          echo "✅ No TODO/FIXME comments found"
+        fi
     
-    - name: Build and push frontend image
-      uses: docker/build-push-action@v5
-      with:
-        context: ./frontend
-        file: ./frontend/Dockerfile
-        push: true
-        tags: |
-          ${{ steps.ecr-registry.outputs.registry_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_FRONTEND_REPO }}:ci-${{ github.sha }}
-          ${{ steps.ecr-registry.outputs.registry_id }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_FRONTEND_REPO }}:ci-latest
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
+    - name: Validate Environment Variable Usage
+      run: |
+        echo "🔍 Validating environment variable usage..."
+        
+        # Check backend uses process.env
+        if grep -r "DB_HOST\|DB_PASSWORD\|JWT_SECRET" backend/src --include="*.js" 2>/dev/null | \
+          grep -v "process.env" | grep -v "require('dotenv')" | grep -v "\.env"; then
+          echo "⚠️  Warning: Found direct references to env vars without process.env in backend"
+        else
+          echo "✅ Backend properly uses process.env for environment variables"
+        fi
+        
+        # Check frontend uses import.meta.env
+        if grep -r "VITE_API_URL\|API_URL" frontend/src --include="*.js" --include="*.jsx" 2>/dev/null | \
+          grep -v "import.meta.env" | grep -v "process.env"; then
+          echo "⚠️  Warning: Found direct references to env vars without import.meta.env in frontend"
+        else
+          echo "✅ Frontend properly uses import.meta.env for environment variables"
+        fi
+
 

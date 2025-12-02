@@ -16,11 +16,10 @@ const metricsMiddleware = require('./metrics/prometheus');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware
-app.use(helmet()); // Security headers
-app.use(cors()); // Enable CORS
-app.use(express.json()); // Parse JSON bodies
-app.use(express.urlencoded({ extended: true })); // Parse URL-encoded bodies
+app.use(helmet());
+app.use(cors());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // Logging
 if (process.env.NODE_ENV !== 'production') {
@@ -34,18 +33,14 @@ if (process.env.METRICS_ENABLED === 'true') {
   app.use(metricsMiddleware);
 }
 
-// Health check routes (no auth required)
 app.use('/health', healthRoutes);
-
-// API routes
 app.use('/api/auth', authRoutes);
 app.use('/api/tasks', taskRoutes);
 app.use('/api/tenant', tenantRoutes);
 
-// Root endpoint
 app.get('/', (req, res) => {
   res.json({
-    message: 'Task Management SaaS API',
+    message: 'Task Management Sample App API',
     version: '1.0.0',
     endpoints: {
       health: '/health',
@@ -57,7 +52,6 @@ app.get('/', (req, res) => {
   });
 });
 
-// Error handling middleware
 app.use((err, req, res, next) => {
   console.error('Error:', err);
   res.status(err.status || 500).json({
@@ -65,12 +59,10 @@ app.use((err, req, res, next) => {
   });
 });
 
-// 404 handler
 app.use((req, res) => {
   res.status(404).json({ error: 'Route not found' });
 });
 
-// Start server
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
