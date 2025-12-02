@@ -68,7 +68,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           # Checkout the correct ref based on trigger type
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || '' }}
       
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -102,7 +102,7 @@ jobs:
           tags: ${{ steps.meta-backend.outputs.tags }}
           labels: |
             org.opencontainers.image.source=${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+            org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
       
@@ -131,7 +131,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || '' }}
       
       - uses: aws-actions/configure-aws-credentials@v4
         with:
