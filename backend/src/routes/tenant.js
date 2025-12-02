@@ -5,9 +5,6 @@ const { ensureTenantIsolation } = require('../middleware/tenant-isolation');
 const { getTenantConfig } = require('../config/tenants');
 const { pool, getTenantSchema } = require('../config/database');
 
-/**
- * Get tenant information and resource usage
- */
 router.get('/info', authenticateToken, ensureTenantIsolation, (req, res) => {
   try {
     const tenantConfig = getTenantConfig(req.tenantId);
@@ -26,19 +23,9 @@ router.get('/info', authenticateToken, ensureTenantIsolation, (req, res) => {
   }
 });
 
-/**
- * Get tenant resource usage
- * Note: Currently returns placeholder data for CPU/memory/pods
- * Future: Integrate with Kubernetes metrics API or Prometheus for actual usage
- */
 router.get('/usage', authenticateToken, ensureTenantIsolation, async (req, res) => {
   try {
-    // Note: Currently returns placeholder data for CPU/memory/pods
-    // Future: Integrate with Kubernetes metrics API or Prometheus for actual usage
     const tenantConfig = getTenantConfig(req.tenantId);
-    
-    // Get tenant-specific schema size
-    // Note: pg_tables is a system catalog, so we query it directly with the schema name
     const schema = getTenantSchema(req.tenantId);
     const schemaSizeQuery = `
       SELECT pg_size_pretty(COALESCE(
@@ -47,7 +34,6 @@ router.get('/usage', authenticateToken, ensureTenantIsolation, async (req, res) 
          WHERE schemaname = $1), 0
       )) as size
     `;
-    // Query system catalog directly (not tenant-isolated, but safe as it's read-only metadata)
     const dbResult = await pool.query(schemaSizeQuery, [schema]);
     
     res.json({

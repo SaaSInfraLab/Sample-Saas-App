@@ -11,11 +11,9 @@ const {
   getTaskStatistics,
 } = require('../controllers/taskController');
 
-// All routes require authentication and tenant isolation
 router.use(authenticateToken);
 router.use(ensureTenantIsolation);
 
-// Task routes
 router.get('/', getTasks);
 router.get('/statistics', getTaskStatistics);
 router.get('/:id', getTaskById);

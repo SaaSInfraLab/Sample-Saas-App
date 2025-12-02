@@ -2,9 +2,6 @@ const express = require('express');
 const router = express.Router();
 const { pool, checkPoolHealth, connectWithRetry, isConnected } = require('../config/database');
 
-/**
- * Execute query with proper timeout and cancellation
- */
 async function queryWithTimeout(query, params = [], timeoutMs = 3000) {
   const client = await pool.connect();
   let timeoutId;
@@ -28,9 +25,6 @@ async function queryWithTimeout(query, params = [], timeoutMs = 3000) {
   }
 }
 
-/**
- * Health check endpoint
- */
 router.get('/', async (req, res) => {
   try {
     // Check database connection with timeout
@@ -43,38 +37,55 @@ router.get('/', async (req, res) => {
       database: 'connected',
     });
   } catch (error) {
-    // Return 200 even if DB is down - app is still running
-    // This prevents Kubernetes from killing the pod
-    console.error('Health check failed:', error.message);
+    // Comprehensive sanitization to prevent credential leakage
+    let sanitizedMessage = error.message || error.toString();
+    
+    // Redact base64-encoded credentials and other sensitive patterns
+    sanitizedMessage = sanitizedMessage
+      // First, catch the specific PostgreSQL authentication error format
+      .replace(/password authentication failed for user\s+["']([^"']+)["']/gi, 'password authentication failed for user "[REDACTED]"')
+      // Catch authentication errors with any user value
+      .replace(/authentication failed for user\s+["']?([^"'\s]+)["']?/gi, 'authentication failed for user "[REDACTED]"')
+      // Redact user credentials in various formats
+      .replace(/user\s+["']([^"']+)["']/gi, 'user "[REDACTED]"')
+      .replace(/password\s+["']([^"']+)["']/gi, 'password "[REDACTED]"')
+      // Redact base64-encoded strings in quotes (like "dGFza3VzZXI=")
+      .replace(/["']([A-Za-z0-9+/]{8,}={0,2})["']/g, (match, base64Str) => {
+        return '"' + '[REDACTED]' + '"';
+      })
+      // Redact base64 strings after keywords
+      .replace(/(?:for|user|password|with|as)\s+["']?([A-Za-z0-9+/]{8,}={0,2})["']?/gi, (match, base64Str) => {
+        return match.replace(base64Str, '[REDACTED]');
+      })
+      // Generic credential redaction
+      .replace(/(?:user|password|pwd|passwd|credential|secret|token)\s*[:=]\s*["']?([^"'\s]{4,})["']?/gi, (match, value) => {
+        return match.replace(value, '[REDACTED]');
+      });
+    
+    console.error('Health check failed:', sanitizedMessage);
     res.status(200).json({
       status: 'degraded',
       timestamp: new Date().toISOString(),
       uptime: process.uptime(),
       database: 'disconnected',
-      warning: error.message,
+      warning: sanitizedMessage,
     });
   }
 });
 
-/**
- * Readiness check endpoint
- */
 router.get('/ready', async (req, res) => {
-  const READINESS_TIMEOUT = 18000; // 18 seconds - slightly less than probe timeout of 20s
+  const READINESS_TIMEOUT = 18000;
   let timeoutId;
 
   try {
     const healthCheckPromise = (async () => {
-      // Check pool state first
       if (!isConnected) {
-        console.log('Pool not connected, attempting to reconnect...');
         const connected = await connectWithRetry(3);
         if (!connected) {
           return false;
         }
       }
       
-      // Check database connection with timeout (3s for faster failure detection)
       await queryWithTimeout('SELECT 1', [], 3000);
       return true;
     })();
@@ -102,18 +113,41 @@ router.get('/ready', async (req, res) => {
     }
   } catch (error) {
     clearTimeout(timeoutId);
-    console.error('Readiness check failed:', error.message);
+    
+    // Comprehensive sanitization to prevent credential leakage
+    let sanitizedMessage = error.message || error.toString();
+    
+    // Redact base64-encoded credentials and other sensitive patterns
+    sanitizedMessage = sanitizedMessage
+      // First, catch the specific PostgreSQL authentication error format
+      .replace(/password authentication failed for user\s+["']([^"']+)["']/gi, 'password authentication failed for user "[REDACTED]"')
+      // Catch authentication errors with any user value
+      .replace(/authentication failed for user\s+["']?([^"'\s]+)["']?/gi, 'authentication failed for user "[REDACTED]"')
+      // Redact user credentials in various formats
+      .replace(/user\s+["']([^"']+)["']/gi, 'user "[REDACTED]"')
+      .replace(/password\s+["']([^"']+)["']/gi, 'password "[REDACTED]"')
+      // Redact base64-encoded strings in quotes (like "dGFza3VzZXI=")
+      .replace(/["']([A-Za-z0-9+/]{8,}={0,2})["']/g, (match, base64Str) => {
+        return '"' + '[REDACTED]' + '"';
+      })
+      // Redact base64 strings after keywords
+      .replace(/(?:for|user|password|with|as)\s+["']?([A-Za-z0-9+/]{8,}={0,2})["']?/gi, (match, base64Str) => {
+        return match.replace(base64Str, '[REDACTED]');
+      })
+      // Generic credential redaction
+      .replace(/(?:user|password|pwd|passwd|credential|secret|token)\s*[:=]\s*["']?([^"'\s]{4,})["']?/gi, (match, value) => {
+        return match.replace(value, '[REDACTED]');
+      });
+    
+    console.error('Readiness check failed:', sanitizedMessage);
     res.status(503).json({
       status: 'not ready',
       timestamp: new Date().toISOString(),
-      error: error.message,
+      error: sanitizedMessage,
     });
   }
 });
 
-/**
- * Liveness check endpoint
- */
 router.get('/live', (req, res) => {
   res.json({
     status: 'alive',

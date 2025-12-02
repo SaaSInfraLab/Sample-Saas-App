@@ -1,6 +1,3 @@
-// Tenant configuration mapping
-// Maps namespace names to tenant IDs and configurations
-
 const TENANT_CONFIG = {
   platform: {
     tenantId: 'platform',

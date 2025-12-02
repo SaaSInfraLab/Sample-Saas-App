@@ -1,8 +1,5 @@
 const Task = require('../models/Task');
 
-/**
- * Get all tasks for the authenticated tenant
- */
 async function getTasks(req, res) {
   try {
     const filters = {
@@ -18,9 +15,6 @@ async function getTasks(req, res) {
   }
 }
 
-/**
- * Get task by ID
- */
 async function getTaskById(req, res) {
   try {
     const { id } = req.params;
@@ -37,9 +31,6 @@ async function getTaskById(req, res) {
   }
 }
 
-/**
- * Create new task
- */
 async function createTask(req, res) {
   try {
     const taskData = {
@@ -55,14 +46,9 @@ async function createTask(req, res) {
   }
 }
 
-/**
- * Update task
- */
 async function updateTask(req, res) {
   try {
     const { id } = req.params;
-    
-    // Verify task exists and belongs to tenant
     const existingTask = await Task.findById(req.queryInTenant, id);
     if (!existingTask) {
       return res.status(404).json({ error: 'Task not found' });
@@ -76,9 +62,6 @@ async function updateTask(req, res) {
   }
 }
 
-/**
- * Delete task
- */
 async function deleteTask(req, res) {
   try {
     const { id } = req.params;
@@ -95,9 +78,6 @@ async function deleteTask(req, res) {
   }
 }
 
-/**
- * Get task statistics
- */
 async function getTaskStatistics(req, res) {
   try {
     const stats = await Task.getStatistics(req.queryInTenant);

@@ -25,9 +25,6 @@ spec:
         ports:
         - containerPort: 80
           name: http
-        env:
-        - name: VITE_API_URL
-          value: "http://backend-service.analytics.svc.cluster.local:3000"
         resources:
           requests:
             cpu: "50m"

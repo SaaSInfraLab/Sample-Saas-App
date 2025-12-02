@@ -1,15 +1,11 @@
 const jwt = require('jsonwebtoken');
 const { isValidTenant } = require('../config/tenants');
 
-// JWT secret from environment
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-jwt-secret-key';
 
-/**
- * Middleware to authenticate JWT tokens
- */
 function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+  const token = authHeader && authHeader.split(' ')[1];
 
   if (!token) {
     return res.status(401).json({ error: 'Access token required' });
@@ -18,12 +14,10 @@ function authenticateToken(req, res, next) {
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
     
-    // Validate tenant exists
     if (!isValidTenant(decoded.tenantId)) {
       return res.status(403).json({ error: 'Invalid tenant' });
     }
 
-    // Attach user info to request
     req.user = {
       userId: decoded.userId,
       email: decoded.email,
@@ -39,9 +33,6 @@ function authenticateToken(req, res, next) {
   }
 }
 
-/**
- * Generate JWT token for user
- */
 function generateToken(user) {
   const payload = {
     userId: user.id,

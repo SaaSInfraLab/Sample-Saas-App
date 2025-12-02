@@ -1,9 +1,5 @@
 const promClient = require('express-prometheus-middleware');
 
-/**
- * Prometheus metrics middleware
- * Exposes metrics at /metrics endpoint
- */
 const metricsMiddleware = promClient({
   metricsPath: '/metrics',
   collectDefaultMetrics: true,

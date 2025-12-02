@@ -1,19 +1,14 @@
 import axios from 'axios';
 
-// Use relative URLs to leverage nginx proxy in production
-// In production, nginx proxies /api requests to the backend service
-// In development, Vite proxy handles this
 const API_URL = import.meta.env.VITE_API_URL || '';
 
-// Create axios instance
 const api = axios.create({
-  baseURL: API_URL, // Empty string = relative URLs, which work with nginx proxy
+  baseURL: API_URL,
   headers: {
     'Content-Type': 'application/json',
   },
 });
 
-// Add token to requests
 api.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('token');
@@ -27,21 +22,9 @@ api.interceptors.request.use(
   }
 );
 
-// Handle token expiration and log errors
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    console.error('API Error:', {
-      message: error.message,
-      status: error.response?.status,
-      statusText: error.response?.statusText,
-      data: error.response?.data,
-      config: {
-        url: error.config?.url,
-        method: error.config?.method,
-        baseURL: error.config?.baseURL,
-      },
-    });
     if (error.response?.status === 401) {
       localStorage.removeItem('token');
       localStorage.removeItem('user');
@@ -51,14 +34,12 @@ api.interceptors.response.use(
   }
 );
 
-// Auth API
 export const authAPI = {
   register: (data) => api.post('/api/auth/register', data),
   login: (data) => api.post('/api/auth/login', data),
   getCurrentUser: () => api.get('/api/auth/me'),
 };
 
-// Tasks API
 export const tasksAPI = {
   getAll: (params) => api.get('/api/tasks', { params }),
   getById: (id) => api.get(`/api/tasks/${id}`),
@@ -68,7 +49,6 @@ export const tasksAPI = {
   getStatistics: () => api.get('/api/tasks/statistics'),
 };
 
-// Tenant API
 export const tenantAPI = {
   getInfo: () => api.get('/api/tenant/info'),
   getUsage: () => api.get('/api/tenant/usage'),
