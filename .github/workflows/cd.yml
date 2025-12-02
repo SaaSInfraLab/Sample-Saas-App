@@ -221,18 +221,14 @@ jobs:
             kubectl -n kube-system wait --for=condition=ready pod -l app=csi-secrets-store-provider-aws --timeout=180s
           fi
 
-  deploy:
-    name: Deploy
+  setup-secrets:
+    name: Setup Secrets
     needs: [build-backend, build-frontend, cluster-setup]
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     permissions:
       id-token: write
       contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        namespace: [platform, analytics]
     steps:
       - uses: actions/checkout@v4
       - uses: aws-actions/configure-aws-credentials@v4
@@ -244,7 +240,6 @@ jobs:
         run: |
           aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ needs.cluster-setup.outputs.cluster_name }}
           echo "KUBECONFIG=$HOME/.kube/config" >> $GITHUB_ENV
-          
 
       - name: Install tools
         timeout-minutes: 5
@@ -270,11 +265,12 @@ jobs:
           yq --version
           echo "✅ All tools installed and verified"
 
-      - name: Get RDS Secret ARN
-        if: matrix.namespace == 'platform'
-        timeout-minutes: 5
+      - name: Setup Secrets for Platform Namespace
+        timeout-minutes: 15
         run: |
           set -e
+          echo "🔐 Setting up secrets for platform namespace..."
+          
           echo "📥 Downloading Terraform state from S3..."
           aws s3 cp "s3://${{ env.TERRAFORM_STATE_BUCKET }}/${{ env.TERRAFORM_STATE_KEY }}" /tmp/terraform.tfstate || {
             echo "❌ Failed to download Terraform state"
@@ -305,10 +301,7 @@ jobs:
           
           echo "✅ AWS Account ID: $AWS_ACCOUNT_ID"
           
-          echo "RDS_SECRET_ARN=$RDS_SECRET_ARN" >> $GITHUB_ENV
-          echo "AWS_ACCOUNT_ID=$AWS_ACCOUNT_ID" >> $GITHUB_ENV
-          
-          SECRETS_FILE="k8s/namespace-${{ matrix.namespace }}/aws-secrets-manager.yaml"
+          SECRETS_FILE="k8s/namespace-platform/aws-secrets-manager.yaml"
           if [ -f "$SECRETS_FILE" ]; then
             echo "📝 Updating $SECRETS_FILE with actual values..."
             # Escape special characters in sed replacement
@@ -321,27 +314,8 @@ jobs:
             echo "⚠️  Warning: $SECRETS_FILE not found"
           fi
           
-          echo "✅ Step completed successfully"
-
-      - name: Setup Secrets (Platform)
-        if: matrix.namespace == 'platform'
-        timeout-minutes: 10
-        run: |
-          set -e
-          echo "🔐 Setting up secrets for platform namespace..."
-          
-          # Verify environment variable is set (set in previous step via $GITHUB_ENV)
-          if [ -z "$RDS_SECRET_ARN" ]; then
-            echo "❌ Error: RDS_SECRET_ARN environment variable is not set"
-            echo "Available env vars:"
-            env | grep -i secret || echo "No secret-related env vars found"
-            exit 1
-          fi
-          
-          echo "✅ Using RDS Secret ARN: ${RDS_SECRET_ARN:0:50}..."
-          
           echo "📦 Applying SecretProviderClass..."
-          kubectl apply -f k8s/namespace-${{ matrix.namespace }}/aws-secrets-manager.yaml || {
+          kubectl apply -f k8s/namespace-platform/aws-secrets-manager.yaml || {
             echo "❌ Failed to apply aws-secrets-manager.yaml"
             exit 1
           }
@@ -349,7 +323,7 @@ jobs:
           echo "⏳ Waiting for secret sync (max 2 minutes)..."
           SECRET_READY=false
           for i in {1..60}; do
-            if kubectl get secret db-credentials -n ${{ matrix.namespace }} >/dev/null 2>&1; then
+            if kubectl get secret db-credentials -n platform >/dev/null 2>&1; then
               echo "✅ Secret db-credentials is available"
               SECRET_READY=true
               break
@@ -362,7 +336,7 @@ jobs:
           if [ "$SECRET_READY" != "true" ]; then
             echo "⚠️  CSI driver did not sync secret, creating manually..."
             SECRET_JSON=$(aws secretsmanager get-secret-value --secret-id "$RDS_SECRET_ARN" --query SecretString --output text)
-            kubectl create secret generic db-credentials -n ${{ matrix.namespace }} \
+            kubectl create secret generic db-credentials -n platform \
               --from-literal=db-host=$(echo "$SECRET_JSON" | jq -r '.host') \
               --from-literal=db-port=$(echo "$SECRET_JSON" | jq -r '.port') \
               --from-literal=db-name=$(echo "$SECRET_JSON" | jq -r '.dbname') \
@@ -375,17 +349,16 @@ jobs:
             echo "✅ Secret created manually"
           fi
           
-          echo "✅ Secrets setup completed"
+          echo "✅ Platform namespace secrets setup completed"
 
-      - name: Setup Secrets (Analytics)
-        if: matrix.namespace == 'analytics'
+      - name: Verify Secrets for Analytics Namespace
         timeout-minutes: 2
         run: |
           set -e
           echo "🔐 Verifying secrets for analytics namespace..."
           
           # Verify postgresql-secret exists (should be created by Terraform separately)
-          if ! kubectl get secret postgresql-secret -n ${{ matrix.namespace }} >/dev/null 2>&1; then
+          if ! kubectl get secret postgresql-secret -n analytics >/dev/null 2>&1; then
             echo "❌ Error: postgresql-secret not found in analytics namespace"
             echo "⚠️  This secret should be created by Terraform tenants module"
             echo "⚠️  Run Terraform apply separately: cd cloudnative-saas-eks/examples/dev-environment/tenants && terraform apply"
@@ -395,7 +368,7 @@ jobs:
           echo "✅ postgresql-secret found in analytics namespace"
           
           # Verify backend-secret exists
-          if ! kubectl get secret backend-secret -n ${{ matrix.namespace }} >/dev/null 2>&1; then
+          if ! kubectl get secret backend-secret -n analytics >/dev/null 2>&1; then
             echo "❌ Error: backend-secret not found in analytics namespace"
             echo "⚠️  This secret should be created by Terraform tenants module"
             echo "⚠️  Run Terraform apply separately: cd cloudnative-saas-eks/examples/dev-environment/tenants && terraform apply"
@@ -403,7 +376,68 @@ jobs:
           fi
           
           echo "✅ backend-secret found in analytics namespace"
-          echo "✅ All required secrets are present - proceeding with deployment"
+          echo "✅ All required secrets are present for analytics namespace"
+
+      - name: Verify All Secrets Ready
+        timeout-minutes: 1
+        run: |
+          set -e
+          echo "✅ Verifying all secrets are ready..."
+          echo "Platform namespace secrets:"
+          kubectl get secrets -n platform | grep -E "(db-credentials)" || echo "⚠️  db-credentials not found"
+          echo ""
+          echo "Analytics namespace secrets:"
+          kubectl get secrets -n analytics | grep -E "(postgresql-secret|backend-secret)" || echo "⚠️  Required secrets not found"
+          echo ""
+          echo "✅ All secret setup completed - ready for deployment"
+
+  deploy:
+    name: Deploy
+    needs: [build-backend, build-frontend, cluster-setup, setup-secrets]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      id-token: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        namespace: [platform, analytics]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: azure/setup-kubectl@v3
+      - name: Setup kubectl
+        run: |
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ needs.cluster-setup.outputs.cluster_name }}
+          echo "KUBECONFIG=$HOME/.kube/config" >> $GITHUB_ENV
+
+      - name: Install tools
+        timeout-minutes: 5
+        run: |
+          set -e
+          echo "🔧 Installing required tools..."
+          sudo apt-get update && sudo apt-get install -y jq || {
+            echo "❌ Failed to install jq"
+            exit 1
+          }
+          echo "✅ jq installed"
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 || {
+            echo "❌ Failed to download yq"
+            exit 1
+          }
+          sudo chmod +x /usr/local/bin/yq || {
+            echo "❌ Failed to make yq executable"
+            exit 1
+          }
+          echo "✅ yq installed"
+          # Verify tools are available
+          jq --version
+          yq --version
+          echo "✅ All tools installed and verified"
 
       - name: Initialize Database
         if: matrix.namespace == 'platform'
