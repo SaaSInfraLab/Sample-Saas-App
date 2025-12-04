@@ -15,7 +15,6 @@ jobs:
   check-ci-status:
     name: Check CI Status
     runs-on: ubuntu-latest
-    # Only run if CI succeeded on main/develop OR if manually triggered OR if tag push
     if: |
       (github.event_name == 'workflow_run' && 
        github.event.workflow_run.conclusion == 'success' && 
