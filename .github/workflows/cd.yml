@@ -16,12 +16,6 @@ jobs:
   check-ci-status:
     name: Check CI Status
     runs-on: ubuntu-latest
-    if: |
-      (github.event_name == 'workflow_run' && 
-       github.event.workflow_run.conclusion == 'success' && 
-       (github.event.workflow_run.head_branch == 'main' || github.event.workflow_run.head_branch == 'develop')) ||
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' || startsWith(github.ref, 'refs/tags/v')))
     outputs:
       should_deploy: ${{ steps.verify.outputs.should_deploy }}
       branch: ${{ steps.verify.outputs.branch }}
@@ -29,30 +23,58 @@ jobs:
       - name: Verify trigger and CI status
         id: verify
         run: |
-          echo "✅ Proceeding with deployment"
+          echo "✅ Checking deployment conditions"
           echo "Event: ${{ github.event_name }}"
+          echo "Ref: ${{ github.ref }}"
+          echo "Branch: ${{ github.ref_name }}"
           
-          SHOULD_DEPLOY="true"
+          SHOULD_DEPLOY="false"
           BRANCH="${{ github.ref_name }}"
           
+          # Check if triggered by workflow_run (after CI)
           if [ "${{ github.event_name }}" == "workflow_run" ]; then
             echo "CI Workflow: ${{ github.event.workflow_run.name }}"
             echo "CI Conclusion: ${{ github.event.workflow_run.conclusion }}"
             echo "CI Branch: ${{ github.event.workflow_run.head_branch }}"
-            echo "CI Commit: ${{ github.event.workflow_run.head_sha }}"
             
-            # Verify CI actually succeeded
-            if [ "${{ github.event.workflow_run.conclusion }}" != "success" ]; then
-              echo "❌ CI workflow did not succeed, cancelling deployment"
-              SHOULD_DEPLOY="false"
+            # Only deploy if CI succeeded and branch is main or develop
+            if [ "${{ github.event.workflow_run.conclusion }}" == "success" ] && \
+               ([ "${{ github.event.workflow_run.head_branch }}" == "main" ] || \
+                [ "${{ github.event.workflow_run.head_branch }}" == "develop" ]); then
+              SHOULD_DEPLOY="true"
+              BRANCH="${{ github.event.workflow_run.head_branch }}"
+              echo "✅ CI succeeded on $BRANCH, proceeding with deployment"
+            else
+              echo "❌ CI did not succeed or branch is not main/develop, skipping deployment"
             fi
-            
-            BRANCH="${{ github.event.workflow_run.head_branch }}"
+          
+          # Check if triggered by workflow_dispatch (manual)
+          elif [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            SHOULD_DEPLOY="true"
+            echo "✅ Manual trigger, proceeding with deployment"
+          
+          # Check if triggered by push to main or develop
+          elif [ "${{ github.event_name }}" == "push" ]; then
+            if [ "${{ github.ref }}" == "refs/heads/main" ] || [ "${{ github.ref }}" == "refs/heads/develop" ]; then
+              SHOULD_DEPLOY="true"
+              echo "✅ Push to $BRANCH, proceeding with deployment"
+            elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+              SHOULD_DEPLOY="true"
+              echo "✅ Version tag push, proceeding with deployment"
+            else
+              echo "❌ Push to branch other than main/develop, skipping deployment"
+            fi
           fi
           
+          # Always set outputs (even if skipping)
           echo "should_deploy=$SHOULD_DEPLOY" >> $GITHUB_OUTPUT
           echo "branch=$BRANCH" >> $GITHUB_OUTPUT
           echo "Deployment decision: $SHOULD_DEPLOY for branch: $BRANCH"
+          
+          # Exit successfully (job will complete, but dependent jobs check the output)
+          if [ "$SHOULD_DEPLOY" != "true" ]; then
+            echo "⏭️  Skipping deployment - dependent jobs will be skipped"
+          fi
 
   build-backend:
     name: Build Backend
@@ -130,6 +152,7 @@ jobs:
   build-frontend:
     name: Build Frontend
     needs: [check-ci-status]
+    if: needs.check-ci-status.outputs.should_deploy == 'true'
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -202,6 +225,7 @@ jobs:
   update-gitops-manifest:
     name: Update GitOps Manifest
     needs: [build-backend, build-frontend]
+    if: needs.check-ci-status.outputs.should_deploy == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
