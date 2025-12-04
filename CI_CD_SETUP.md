@@ -14,22 +14,43 @@ Automated CI/CD pipeline with GitOps deployment to AWS EKS using GitHub Actions.
 
 ### GitHub Secrets
 
-Configure these secrets in your GitHub repository:
+Configure these secrets in your GitHub repository (Settings → Secrets and variables → Actions):
 
 #### Required Secrets
 
-- `AWS_ROLE_ARN` - IAM role ARN for GitHub Actions (ECR access)
-- `ECR_BACKEND_REPO` - ECR repository name for backend
-- `ECR_FRONTEND_REPO` - ECR repository name for frontend
-- `GITOPS_REPO_TOKEN` - Personal Access Token (PAT) with `repo` scope for Gitops-pipeline repository
+| Secret Name | Description | Example Value | How to Get |
+|------------|-------------|---------------|------------|
+| `AWS_ROLE_ARN` | IAM role ARN for GitHub Actions (ECR and S3 access) | `arn:aws:iam::821368347884:role/github-actions-ecr-eks-role` | From Terraform outputs or AWS Console |
+| `ECR_BACKEND_REPO` | ECR repository name for backend (just the name, not full path) | `saas-infra-lab-dev-backend` | From Terraform outputs: `terraform output ecr_backend_repository_name` |
+| `ECR_FRONTEND_REPO` | ECR repository name for frontend (just the name, not full path) | `saas-infra-lab-dev-frontend` | From Terraform outputs: `terraform output ecr_frontend_repository_name` |
+| `GITOPS_REPO_TOKEN` | Personal Access Token (PAT) with `repo` scope for Gitops-pipeline repository | `ghp_xxxxxxxxxxxx` | Create in GitHub Settings → Developer settings → Personal access tokens |
+
+#### Getting ECR Repository Names from Terraform
+
+```bash
+# Navigate to infrastructure directory
+cd cloudnative-saas-eks/examples/dev-environment/infrastructure
+
+# Get ECR repository names
+terraform output ecr_backend_repository_name
+terraform output ecr_frontend_repository_name
+
+# Or get full URLs and extract the name
+terraform output ecr_backend_repository_url
+terraform output ecr_frontend_repository_url
+```
 
 #### Creating GITOPS_REPO_TOKEN
 
 1. Go to GitHub Settings → Developer settings → Personal access tokens → Tokens (classic)
-2. Generate new token with `repo` scope
-3. Add as secret `GITOPS_REPO_TOKEN` in this repository
+2. Click "Generate new token (classic)"
+3. Give it a name (e.g., "GitOps Pipeline Access")
+4. Select scope: `repo` (full control of private repositories)
+5. Click "Generate token"
+6. Copy the token immediately (you won't see it again)
+7. Add as secret `GITOPS_REPO_TOKEN` in the Sample-saas-app repository
 
-**Note:** The token needs write access to the `Gitops-pipeline` repository.
+**Note:** The token needs write access to the `Gitops-pipeline` repository. If the repository is in a different organization, ensure the token has access to that organization's repositories.
 
 ## 🔄 Workflows
 
