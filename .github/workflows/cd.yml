@@ -235,8 +235,18 @@ jobs:
           sudo chmod +x /usr/local/bin/yq
           yq --version
       
+      - name: Configure AWS credentials for ECR lookup
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      
       - name: Update image tags in Kustomization files
         working-directory: gitops-repo
+        env:
+          AWS_REGION: ${{ env.AWS_REGION }}
+          ECR_BACKEND_REPO: ${{ secrets.ECR_BACKEND_REPO }}
+          ECR_FRONTEND_REPO: ${{ secrets.ECR_FRONTEND_REPO }}
         run: |
           set -e
           
@@ -249,9 +259,37 @@ jobs:
           echo "  Backend: $BACKEND_IMAGE (tag: $BACKEND_TAG)"
           echo "  Frontend: $FRONTEND_IMAGE (tag: $FRONTEND_TAG)"
           
-          # Extract image names (without tag)
+          # Get AWS account ID for ECR registry
+          ECR_REGISTRY=$(aws sts get-caller-identity --query Account --output text)
+          echo "🔍 AWS Account ID: $ECR_REGISTRY"
+          
+          # Extract image names (without tag) from built images
           BACKEND_NAME=$(echo "$BACKEND_IMAGE" | cut -d':' -f1)
           FRONTEND_NAME=$(echo "$FRONTEND_IMAGE" | cut -d':' -f1)
+          
+          # If extraction failed or doesn't match expected pattern, construct from AWS account and secrets
+          # This ensures we always have the correct ECR path, regardless of how the image was built
+          if [ -z "$BACKEND_NAME" ] || [ "$BACKEND_NAME" == "$BACKEND_IMAGE" ] || [[ ! "$BACKEND_NAME" =~ ^[0-9]+\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/ ]]; then
+            echo "⚠️  Backend image name extraction failed or invalid, constructing from AWS and secrets..."
+            BACKEND_NAME="${ECR_REGISTRY}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_BACKEND_REPO}"
+            echo "✅ Constructed backend image name: $BACKEND_NAME"
+          else
+            echo "✅ Using backend image name from build output: $BACKEND_NAME"
+          fi
+          
+          if [ -z "$FRONTEND_NAME" ] || [ "$FRONTEND_NAME" == "$FRONTEND_IMAGE" ] || [[ ! "$FRONTEND_NAME" =~ ^[0-9]+\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/ ]]; then
+            echo "⚠️  Frontend image name extraction failed or invalid, constructing from AWS and secrets..."
+            FRONTEND_NAME="${ECR_REGISTRY}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_FRONTEND_REPO}"
+            echo "✅ Constructed frontend image name: $FRONTEND_NAME"
+          else
+            echo "✅ Using frontend image name from build output: $FRONTEND_NAME"
+          fi
+          
+          echo ""
+          echo "📋 Final image configuration:"
+          echo "  Backend: $BACKEND_NAME:$BACKEND_TAG"
+          echo "  Frontend: $FRONTEND_NAME:$FRONTEND_TAG"
+          echo ""
           
           # Update base kustomization.yaml
           BASE_KUSTOM_FILE="apps/sample-saas-app/base/kustomization.yaml"
