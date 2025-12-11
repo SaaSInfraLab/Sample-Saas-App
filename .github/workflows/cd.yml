@@ -121,23 +121,30 @@ jobs:
       - name: Set image output
         id: image-info
         run: |
-          IMAGE=$(echo "${{ steps.meta-backend.outputs.tags }}" | head -n1 | tr -d '\n' | xargs || true)
-          if [ -z "$IMAGE" ]; then
-            echo "⚠️  Warning: Backend image output is empty, constructing from ECR..."
-            ECR_REGISTRY=$(aws sts get-caller-identity --query Account --output text)
-            IMAGE="${ECR_REGISTRY}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_BACKEND_REPO }}:latest"
-            echo "Constructed backend image: $IMAGE"
+          # Get all tags from metadata action
+          ALL_TAGS="${{ steps.meta-backend.outputs.tags }}"
+          
+          # Prefer SHA tag (unique per commit), fallback to first tag
+          IMAGE_TAG=$(echo "$ALL_TAGS" | grep -E "sha-[a-f0-9]+" | head -n1 | sed 's/.*://' || echo "")
+          
+          if [ -z "$IMAGE_TAG" ]; then
+            # Fallback: use first tag or commit SHA
+            IMAGE_TAG=$(echo "$ALL_TAGS" | head -n1 | sed 's/.*://' || echo "")
           fi
           
-          # Extract tag
-          IMAGE_TAG=$(echo "$IMAGE" | cut -d':' -f2)
-          if [ -z "$IMAGE_TAG" ] || [ "$IMAGE_TAG" == "$IMAGE" ]; then
-            IMAGE_TAG="latest"
+          if [ -z "$IMAGE_TAG" ]; then
+            # Last resort: use commit SHA directly
+            IMAGE_TAG="${{ github.sha }}"
           fi
+          
+          # Construct full image path
+          ECR_REGISTRY=$(aws sts get-caller-identity --query Account --output text)
+          IMAGE="${ECR_REGISTRY}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_BACKEND_REPO }}:${IMAGE_TAG}"
           
           echo "image=$IMAGE" >> $GITHUB_OUTPUT
           echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
           echo "✅ Backend image: $IMAGE (tag: $IMAGE_TAG)"
+          echo "   All available tags: $ALL_TAGS"
 
   build-frontend:
     name: Build Frontend
@@ -194,23 +201,30 @@ jobs:
       - name: Set image output
         id: image-info
         run: |
-          IMAGE=$(echo "${{ steps.meta-frontend.outputs.tags }}" | head -n1 | tr -d '\n' | xargs || true)
-          if [ -z "$IMAGE" ]; then
-            echo "⚠️  Warning: Frontend image output is empty, constructing from ECR..."
-            ECR_REGISTRY=$(aws sts get-caller-identity --query Account --output text)
-            IMAGE="${ECR_REGISTRY}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_FRONTEND_REPO }}:latest"
-            echo "Constructed frontend image: $IMAGE"
+          # Get all tags from metadata action
+          ALL_TAGS="${{ steps.meta-frontend.outputs.tags }}"
+          
+          # Prefer SHA tag (unique per commit), fallback to first tag
+          IMAGE_TAG=$(echo "$ALL_TAGS" | grep -E "sha-[a-f0-9]+" | head -n1 | sed 's/.*://' || echo "")
+          
+          if [ -z "$IMAGE_TAG" ]; then
+            # Fallback: use first tag or commit SHA
+            IMAGE_TAG=$(echo "$ALL_TAGS" | head -n1 | sed 's/.*://' || echo "")
           fi
           
-          # Extract tag
-          IMAGE_TAG=$(echo "$IMAGE" | cut -d':' -f2)
-          if [ -z "$IMAGE_TAG" ] || [ "$IMAGE_TAG" == "$IMAGE" ]; then
-            IMAGE_TAG="latest"
+          if [ -z "$IMAGE_TAG" ]; then
+            # Last resort: use commit SHA directly
+            IMAGE_TAG="${{ github.sha }}"
           fi
+          
+          # Construct full image path
+          ECR_REGISTRY=$(aws sts get-caller-identity --query Account --output text)
+          IMAGE="${ECR_REGISTRY}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_FRONTEND_REPO }}:${IMAGE_TAG}"
           
           echo "image=$IMAGE" >> $GITHUB_OUTPUT
           echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
           echo "✅ Frontend image: $IMAGE (tag: $IMAGE_TAG)"
+          echo "   All available tags: $ALL_TAGS"
 
   update-gitops-manifest:
     name: Update GitOps Manifest
@@ -330,10 +344,12 @@ jobs:
             # Always update if placeholders are present (first-time deployment)
             if [[ "$CURRENT_BACKEND" == *"PLACEHOLDER"* ]] || [[ "$CURRENT_FRONTEND" == *"PLACEHOLDER"* ]]; then
               echo "  🔄 Placeholders detected, updating..."
+            # Always update if tags match but we have a new build (force ArgoCD sync)
+            # This ensures ArgoCD pulls the latest image even if tag is the same
             elif [ "$CURRENT_BACKEND" == "$backend_name" ] && [ "$CURRENT_FRONTEND" == "$frontend_name" ] && \
                  [ "$CURRENT_BACKEND_TAG" == "$backend_tag" ] && [ "$CURRENT_FRONTEND_TAG" == "$frontend_tag" ]; then
-              echo "  ℹ️  Values already match, skipping update"
-              return 0
+              echo "  ℹ️  Values match, but updating anyway to trigger ArgoCD sync"
+              echo "  📝 Note: This ensures ArgoCD pulls the latest image from ECR"
             else
               echo "  🔄 Values differ, updating..."
             fi
@@ -356,7 +372,18 @@ jobs:
               return 1
             }
             
-            echo "✅ Updated $kustom_file"
+            # Add a timestamp comment to force git to detect a change
+            # This ensures ArgoCD syncs even if image tag is the same
+            TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+            if ! grep -q "# Updated:" "$kustom_file"; then
+              # Add comment at the top if it doesn't exist
+              sed -i "1i# Updated: $TIMESTAMP" "$kustom_file"
+            else
+              # Update existing comment
+              sed -i "s/# Updated:.*/# Updated: $TIMESTAMP/" "$kustom_file"
+            fi
+            
+            echo "✅ Updated $kustom_file (timestamp: $TIMESTAMP)"
             return 0
           }
           
