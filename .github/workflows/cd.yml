@@ -234,6 +234,14 @@ jobs:
           sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
           sudo chmod +x /usr/local/bin/yq
           yq --version
+          echo "✅ yq installed successfully"
+          
+          # Test yq with a sample file
+          TEST_FILE="apps/sample-saas-app/base/kustomization.yaml"
+          if [ -f "$TEST_FILE" ]; then
+            echo "🧪 Testing yq with $TEST_FILE:"
+            yq eval '.images[0].newName' "$TEST_FILE" || echo "  ⚠️  yq test failed"
+          fi
       
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -277,6 +285,21 @@ jobs:
           echo "  Frontend: $FRONTEND_NAME:$FRONTEND_TAG"
           echo ""
           
+          # Show current state of files before update
+          echo "🔍 Current state of kustomization files (before update):"
+          for file in apps/sample-saas-app/base/kustomization.yaml \
+                      apps/sample-saas-app/overlays/platform/kustomization.yaml \
+                      apps/sample-saas-app/overlays/analytics/kustomization.yaml; do
+            if [ -f "$file" ]; then
+              echo "  $file:"
+              echo "    Backend: $(yq eval '.images[0].newName // "NOT_SET"' "$file" 2>/dev/null || echo "ERROR")"
+              echo "    Frontend: $(yq eval '.images[1].newName // "NOT_SET"' "$file" 2>/dev/null || echo "ERROR")"
+            else
+              echo "  $file: NOT FOUND"
+            fi
+          done
+          echo ""
+          
           # Function to update kustomization file
           update_kustomization() {
             local kustom_file=$1
@@ -304,10 +327,15 @@ jobs:
             echo "  New Frontend: $frontend_name:$frontend_tag"
             
             # Check if update is needed
-            if [ "$CURRENT_BACKEND" == "$backend_name" ] && [ "$CURRENT_FRONTEND" == "$frontend_name" ] && \
-               [ "$CURRENT_BACKEND_TAG" == "$backend_tag" ] && [ "$CURRENT_FRONTEND_TAG" == "$frontend_tag" ]; then
+            # Always update if placeholders are present (first-time deployment)
+            if [[ "$CURRENT_BACKEND" == *"PLACEHOLDER"* ]] || [[ "$CURRENT_FRONTEND" == *"PLACEHOLDER"* ]]; then
+              echo "  🔄 Placeholders detected, updating..."
+            elif [ "$CURRENT_BACKEND" == "$backend_name" ] && [ "$CURRENT_FRONTEND" == "$frontend_name" ] && \
+                 [ "$CURRENT_BACKEND_TAG" == "$backend_tag" ] && [ "$CURRENT_FRONTEND_TAG" == "$frontend_tag" ]; then
               echo "  ℹ️  Values already match, skipping update"
               return 0
+            else
+              echo "  🔄 Values differ, updating..."
             fi
             
             # Update repository names and tags
@@ -332,22 +360,48 @@ jobs:
             return 0
           }
           
+          # Track if any files were updated
+          FILES_UPDATED=0
+          
           # Update base kustomization.yaml
-          update_kustomization "apps/sample-saas-app/base/kustomization.yaml" "$BACKEND_NAME" "$FRONTEND_NAME" "$BACKEND_TAG" "$FRONTEND_TAG"
+          if update_kustomization "apps/sample-saas-app/base/kustomization.yaml" "$BACKEND_NAME" "$FRONTEND_NAME" "$BACKEND_TAG" "$FRONTEND_TAG"; then
+            FILES_UPDATED=$((FILES_UPDATED + 1))
+          fi
           
           # Update platform overlay
-          update_kustomization "apps/sample-saas-app/overlays/platform/kustomization.yaml" "$BACKEND_NAME" "$FRONTEND_NAME" "$BACKEND_TAG" "$FRONTEND_TAG"
+          if update_kustomization "apps/sample-saas-app/overlays/platform/kustomization.yaml" "$BACKEND_NAME" "$FRONTEND_NAME" "$BACKEND_TAG" "$FRONTEND_TAG"; then
+            FILES_UPDATED=$((FILES_UPDATED + 1))
+          fi
           
           # Update analytics overlay
-          update_kustomization "apps/sample-saas-app/overlays/analytics/kustomization.yaml" "$BACKEND_NAME" "$FRONTEND_NAME" "$BACKEND_TAG" "$FRONTEND_TAG"
+          if update_kustomization "apps/sample-saas-app/overlays/analytics/kustomization.yaml" "$BACKEND_NAME" "$FRONTEND_NAME" "$BACKEND_TAG" "$FRONTEND_TAG"; then
+            FILES_UPDATED=$((FILES_UPDATED + 1))
+          fi
           
           echo ""
-          echo "✅ All kustomization files updated"
+          echo "✅ Processed all kustomization files (updated: $FILES_UPDATED)"
           
           # Show what changed
           echo ""
-          echo "📋 Changes made:"
-          git diff --stat || true
+          echo "📋 Git status after updates:"
+          git status --short || true
+          
+          echo ""
+          echo "📋 Detailed changes:"
+          git diff apps/sample-saas-app/ || echo "No diff output"
+          
+          # Verify the updates were actually made
+          echo ""
+          echo "🔍 Verifying updates in files:"
+          for file in apps/sample-saas-app/base/kustomization.yaml \
+                      apps/sample-saas-app/overlays/platform/kustomization.yaml \
+                      apps/sample-saas-app/overlays/analytics/kustomization.yaml; do
+            if [ -f "$file" ]; then
+              echo "  $file:"
+              yq eval '.images[0].newName' "$file" 2>/dev/null | head -1 || echo "    (could not read)"
+              yq eval '.images[1].newName' "$file" 2>/dev/null | head -1 || echo "    (could not read)"
+            fi
+          done
       
       - name: Commit and push to GitOps repo
         working-directory: gitops-repo
