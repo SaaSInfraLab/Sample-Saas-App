@@ -277,40 +277,77 @@ jobs:
           echo "  Frontend: $FRONTEND_NAME:$FRONTEND_TAG"
           echo ""
           
+          # Function to update kustomization file
+          update_kustomization() {
+            local kustom_file=$1
+            local backend_name=$2
+            local frontend_name=$3
+            local backend_tag=$4
+            local frontend_tag=$5
+            
+            if [ ! -f "$kustom_file" ]; then
+              echo "⚠️  File not found: $kustom_file"
+              return 1
+            fi
+            
+            echo "📝 Updating $kustom_file..."
+            
+            # Check current values
+            CURRENT_BACKEND=$(yq eval '.images[0].newName // "PLACEHOLDER_ECR_BACKEND_URL"' "$kustom_file" 2>/dev/null || echo "PLACEHOLDER_ECR_BACKEND_URL")
+            CURRENT_FRONTEND=$(yq eval '.images[1].newName // "PLACEHOLDER_ECR_FRONTEND_URL"' "$kustom_file" 2>/dev/null || echo "PLACEHOLDER_ECR_FRONTEND_URL")
+            CURRENT_BACKEND_TAG=$(yq eval '.images[0].newTag // "latest"' "$kustom_file" 2>/dev/null || echo "latest")
+            CURRENT_FRONTEND_TAG=$(yq eval '.images[1].newTag // "latest"' "$kustom_file" 2>/dev/null || echo "latest")
+            
+            echo "  Current Backend: $CURRENT_BACKEND:$CURRENT_BACKEND_TAG"
+            echo "  Current Frontend: $CURRENT_FRONTEND:$CURRENT_FRONTEND_TAG"
+            echo "  New Backend: $backend_name:$backend_tag"
+            echo "  New Frontend: $frontend_name:$frontend_tag"
+            
+            # Check if update is needed
+            if [ "$CURRENT_BACKEND" == "$backend_name" ] && [ "$CURRENT_FRONTEND" == "$frontend_name" ] && \
+               [ "$CURRENT_BACKEND_TAG" == "$backend_tag" ] && [ "$CURRENT_FRONTEND_TAG" == "$frontend_tag" ]; then
+              echo "  ℹ️  Values already match, skipping update"
+              return 0
+            fi
+            
+            # Update repository names and tags
+            yq eval ".images[0].newName = \"$backend_name\"" -i "$kustom_file" || {
+              echo "  ❌ Failed to update backend image name"
+              return 1
+            }
+            yq eval ".images[0].newTag = \"$backend_tag\"" -i "$kustom_file" || {
+              echo "  ❌ Failed to update backend image tag"
+              return 1
+            }
+            yq eval ".images[1].newName = \"$frontend_name\"" -i "$kustom_file" || {
+              echo "  ❌ Failed to update frontend image name"
+              return 1
+            }
+            yq eval ".images[1].newTag = \"$frontend_tag\"" -i "$kustom_file" || {
+              echo "  ❌ Failed to update frontend image tag"
+              return 1
+            }
+            
+            echo "✅ Updated $kustom_file"
+            return 0
+          }
+          
           # Update base kustomization.yaml
-          BASE_KUSTOM_FILE="apps/sample-saas-app/base/kustomization.yaml"
-          if [ -f "$BASE_KUSTOM_FILE" ]; then
-            echo "📝 Updating base kustomization.yaml..."
-            yq eval ".images[0].newName = \"$BACKEND_NAME\"" -i "$BASE_KUSTOM_FILE"
-            yq eval ".images[0].newTag = \"$BACKEND_TAG\"" -i "$BASE_KUSTOM_FILE"
-            yq eval ".images[1].newName = \"$FRONTEND_NAME\"" -i "$BASE_KUSTOM_FILE"
-            yq eval ".images[1].newTag = \"$FRONTEND_TAG\"" -i "$BASE_KUSTOM_FILE"
-            echo "✅ Base kustomization updated"
-          fi
+          update_kustomization "apps/sample-saas-app/base/kustomization.yaml" "$BACKEND_NAME" "$FRONTEND_NAME" "$BACKEND_TAG" "$FRONTEND_TAG"
           
           # Update platform overlay
-          PLATFORM_KUSTOM_FILE="apps/sample-saas-app/overlays/platform/kustomization.yaml"
-          if [ -f "$PLATFORM_KUSTOM_FILE" ]; then
-            echo "📝 Updating platform overlay kustomization.yaml..."
-            yq eval ".images[0].newName = \"$BACKEND_NAME\"" -i "$PLATFORM_KUSTOM_FILE"
-            yq eval ".images[0].newTag = \"$BACKEND_TAG\"" -i "$PLATFORM_KUSTOM_FILE"
-            yq eval ".images[1].newName = \"$FRONTEND_NAME\"" -i "$PLATFORM_KUSTOM_FILE"
-            yq eval ".images[1].newTag = \"$FRONTEND_TAG\"" -i "$PLATFORM_KUSTOM_FILE"
-            echo "✅ Platform overlay updated"
-          fi
+          update_kustomization "apps/sample-saas-app/overlays/platform/kustomization.yaml" "$BACKEND_NAME" "$FRONTEND_NAME" "$BACKEND_TAG" "$FRONTEND_TAG"
           
           # Update analytics overlay
-          ANALYTICS_KUSTOM_FILE="apps/sample-saas-app/overlays/analytics/kustomization.yaml"
-          if [ -f "$ANALYTICS_KUSTOM_FILE" ]; then
-            echo "📝 Updating analytics overlay kustomization.yaml..."
-            yq eval ".images[0].newName = \"$BACKEND_NAME\"" -i "$ANALYTICS_KUSTOM_FILE"
-            yq eval ".images[0].newTag = \"$BACKEND_TAG\"" -i "$ANALYTICS_KUSTOM_FILE"
-            yq eval ".images[1].newName = \"$FRONTEND_NAME\"" -i "$ANALYTICS_KUSTOM_FILE"
-            yq eval ".images[1].newTag = \"$FRONTEND_TAG\"" -i "$ANALYTICS_KUSTOM_FILE"
-            echo "✅ Analytics overlay updated"
-          fi
+          update_kustomization "apps/sample-saas-app/overlays/analytics/kustomization.yaml" "$BACKEND_NAME" "$FRONTEND_NAME" "$BACKEND_TAG" "$FRONTEND_TAG"
           
+          echo ""
           echo "✅ All kustomization files updated"
+          
+          # Show what changed
+          echo ""
+          echo "📋 Changes made:"
+          git diff --stat || true
       
       - name: Commit and push to GitOps repo
         working-directory: gitops-repo
@@ -320,32 +357,53 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           
-          # Check if there are any changes
-          if git diff --quiet && git diff --staged --quiet; then
+          # Show current status
+          echo "📊 Git status before commit:"
+          git status --short || true
+          
+          # Show detailed diff
+          echo ""
+          echo "📋 Detailed changes:"
+          git diff apps/sample-saas-app/ || echo "No diff output"
+          
+          # Stage all changes in sample-saas-app directory
+          git add apps/sample-saas-app/ || {
+            echo "⚠️  No files to stage in apps/sample-saas-app/"
+          }
+          
+          # Check if there are staged changes
+          if git diff --staged --quiet; then
+            echo ""
             echo "ℹ️  No changes to commit (images may already be up to date)"
+            echo "   This can happen if:"
+            echo "   - Images are already at the same tag"
+            echo "   - ECR paths are already correct"
+            echo "   - Files were already updated in a previous run"
             exit 0
           fi
           
           # Show what will be committed
+          echo ""
           echo "📋 Changes to be committed:"
-          git diff --stat
+          git diff --staged --stat
           
           # Commit changes
           COMMIT_MSG="chore: update sample-saas-app images to ${{ needs.build-backend.outputs.image_tag }}"
-          git add apps/sample-saas-app/
           git commit -m "$COMMIT_MSG" || {
-            echo "⚠️  No changes to commit (may already be up to date)"
+            echo "⚠️  Commit failed (may already be up to date)"
             exit 0
           }
           
           # Push to develop branch (Argo CD is configured to watch develop)
           TARGET_BRANCH="develop"
+          echo ""
           echo "📤 Pushing to GitOps repo branch: $TARGET_BRANCH"
           git push origin "$TARGET_BRANCH" || {
             echo "❌ Failed to push to GitOps repo"
             exit 1
           }
           
+          echo ""
           echo "✅ Successfully updated GitOps repository"
           echo "   Commit: $COMMIT_MSG"
-          echo "   Flux will automatically detect and deploy the changes"
+          echo "   ArgoCD will automatically detect and deploy the changes"
