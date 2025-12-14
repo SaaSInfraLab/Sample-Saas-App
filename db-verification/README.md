@@ -10,11 +10,22 @@ Connect to and verify the RDS database.
 
 **Bash:**
 ```bash
-echo "Host: $(kubectl get secret db-credentials -n platform -o jsonpath='{.data.db-host}' | base64 -d)"
-echo "Port: $(kubectl get secret db-credentials -n platform -o jsonpath='{.data.db-port}' | base64 -d)"
-echo "Database: $(kubectl get secret db-credentials -n platform -o jsonpath='{.data.db-name}' | base64 -d)"
-echo "Username: $(kubectl get secret db-credentials -n platform -o jsonpath='{.data.db-username}' | base64 -d)"
-echo "Password: $(kubectl get secret db-credentials -n platform -o jsonpath='{.data.db-password}' | base64 -d)"
+echo "Host: $(kubectl get configmap backend-config -n platform -o jsonpath='{.data.db-host}')"
+echo "Port: $(kubectl get configmap backend-config -n platform -o jsonpath='{.data.db-port}')"
+echo "Database: $(kubectl get configmap backend-config -n platform -o jsonpath='{.data.db-name}')"
+echo "Username: $(kubectl get secret postgresql-secret -n platform -o jsonpath='{.data.db-user}' | base64 -d)"
+echo "Password: $(kubectl get secret postgresql-secret -n platform -o jsonpath='{.data.db-password}' | base64 -d)"
+```
+
+**PowerShell:**
+```powershell
+Write-Host "Host: $(kubectl get configmap backend-config -n platform -o jsonpath='{.data.db-host}')"
+Write-Host "Port: $(kubectl get configmap backend-config -n platform -o jsonpath='{.data.db-port}')"
+Write-Host "Database: $(kubectl get configmap backend-config -n platform -o jsonpath='{.data.db-name}')"
+$user = kubectl get secret postgresql-secret -n platform -o jsonpath='{.data.db-user}' | ForEach-Object { [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($_)) }
+$pass = kubectl get secret postgresql-secret -n platform -o jsonpath='{.data.db-password}' | ForEach-Object { [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($_)) }
+Write-Host "Username: $user"
+Write-Host "Password: $pass"
 ```
 
 ### Analytics Namespace
@@ -31,19 +42,28 @@ echo "Password: $(kubectl get secret postgresql-secret -n analytics -o jsonpath=
 ## Connect with pgAdmin
 
 1. **Get connection details** (run commands above)
-2. **Create proxy pod:**
+2. **Create proxy pod** (if not exists):
    ```bash
    kubectl apply -f create-db-proxy-pod.yaml
    kubectl wait --for=condition=ready pod/db-proxy -n platform --timeout=30s
    ```
-3. **Port forward:**
+3. **Port forward** (run this in a separate terminal and keep it running):
    ```bash
    kubectl port-forward -n platform db-proxy 5433:5432
    ```
-4. **Connect in pgAdmin:**
+   **Important**: Keep this terminal window open while connecting!
+4. **Connect in pgAdmin** (in a new terminal/window):
    - Host: `localhost`
-   - Port: `5433`
-   - Database/Username/Password: Use decoded values from step 1
+   - Port: `5433` (NOT 5432 - this avoids conflicts)
+   - Database: `taskdb` (or value from step 1)
+   - Username: (from `postgresql-secret`)
+   - Password: (from `postgresql-secret`)
+
+**Troubleshooting:**
+- If connection fails, ensure port-forward is running
+- Check pod status: `kubectl get pod db-proxy -n platform`
+- Check pod logs: `kubectl logs db-proxy -n platform`
+- Verify RDS security group allows traffic from EKS cluster
 
 ## Connect via psql
 

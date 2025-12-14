@@ -12,7 +12,7 @@ spec:
     - /bin/sh
     - -c
     - |
-      PGHOST=$(cat /etc/db-secret/db-host)
+      PGHOST=$(cat /etc/db-config/db-host)
       exec socat TCP-LISTEN:5432,fork,reuseaddr TCP:$PGHOST:5432
     ports:
     - containerPort: 5432
@@ -25,11 +25,11 @@ spec:
         cpu: "100m"
         memory: "128Mi"
     volumeMounts:
-    - name: db-secret
-      mountPath: /etc/db-secret
+    - name: db-config
+      mountPath: /etc/db-config
       readOnly: true
   volumes:
-  - name: db-secret
-    secret:
-      secretName: db-credentials
+  - name: db-config
+    configMap:
+      name: backend-config
 
