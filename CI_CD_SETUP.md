@@ -88,25 +88,6 @@ terraform output ecr_backend_repository_name
 terraform output ecr_frontend_repository_name
 ```
 
-**Get AWS_ROLE_ARN:**
-```bash
-# From Terraform outputs
-terraform output
-
-# Or from AWS Console
-# IAM → Roles → Find your GitHub Actions role → Copy ARN
-```
-
-**Create GITOPS_REPO_TOKEN:**
-1. Go to GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic)
-2. Click "Generate new token (classic)"
-3. Give it a descriptive name: `GitOps Pipeline Access`
-4. Select expiration (recommend: 90 days or custom)
-5. Select scope: ✅ `repo` (Full control of private repositories)
-6. Click "Generate token"
-7. **Copy the token immediately** (you won't see it again!)
-8. Add as secret `GITOPS_REPO_TOKEN` in the `Sample-saas-app` repository
-
 ## 🔄 How It Works
 
 ```
@@ -143,30 +124,11 @@ kubectl get pods -n analytics
 
 ## 🛠️ Troubleshooting
 
-### Secret Not Found Error
-
-If you see `Secret not found` errors:
-- Verify the secret name matches exactly (case-sensitive)
-- Check you're adding secrets to the correct repository (`Sample-saas-app`)
-- Ensure the secret is added under "Actions" secrets, not "Dependabot" secrets
-
-### ECR Access Denied
-
-If you see ECR access errors:
-- Verify `AWS_ROLE_ARN` is correct
-- Check the IAM role has ECR push/pull permissions
-- Verify the role trust relationship allows GitHub Actions
-
-### CD Fails to Update GitOps
-
-If pushing to GitOps repo fails:
+**CD fails to update GitOps:**
 - Check `GITOPS_REPO_TOKEN` has `repo` scope
-- Verify token has write access to `Gitops-pipeline` repository
-- Verify the token hasn't expired
-- Check if the repository is private and the token has access
+- Verify token has access to Gitops-pipeline repo
 
-### Images Not Deploying
-
+**Images not deploying:**
 - Check ArgoCD sync: `argocd app get sample-saas-app`
 - Check ArgoCD applications: `kubectl get applications -n argocd`
 - Check deployments: `kubectl get deployments -n platform`
