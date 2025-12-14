@@ -1,47 +1,41 @@
-# Quick Start - Run Locally
+# Quick Start Guide
 
-## Option 1: Docker Compose (Recommended - Easiest)
+Get the application running locally in minutes.
 
+## 🚀 Option 1: Docker Compose (Recommended)
+
+**Start all services:**
 ```bash
-# Start all services (database, backend, frontend)
 docker-compose up -d
+```
 
-# View logs
-docker-compose logs -f
+**Access:**
+- Frontend: http://localhost:8080
+- Backend API: http://localhost:3000
+- Health Check: http://localhost:3000/health
+- Metrics: http://localhost:9090/metrics
 
-# Stop services
+**Stop services:**
+```bash
 docker-compose down
 ```
 
-**Access the application:**
-- Frontend: http://localhost:8080
-- Backend API: http://localhost:3000
-- Backend Metrics: http://localhost:9090/metrics
-- Backend Health: http://localhost:3000/health
+**View logs:**
+```bash
+docker-compose logs -f
+```
 
-**First Steps:**
-1. Open http://localhost:8080
-2. Click "Sign Up" and create an account
-3. Select a tenant (Platform Team, Analytics Team, or Data Team)
-4. Create your first task
+## 🛠️ Option 2: Manual Setup
 
-## Option 2: Manual Setup (Without Docker for Frontend/Backend)
-
-### 1. Start Database Only
-
+### 1. Start Database
 ```bash
 docker-compose up -d postgres
-
-# Wait for database to be ready (about 10 seconds)
-# Migrations will run automatically
+# Wait ~10 seconds for migrations to complete
 ```
 
 ### 2. Start Backend
-
 ```bash
 cd backend
-
-# Install dependencies
 npm install
 
 # Create .env file
@@ -57,103 +51,76 @@ JWT_SECRET=local-dev-secret-key
 METRICS_ENABLED=true
 EOF
 
-# Start backend
 npm run dev
 ```
 
-Backend will run on: http://localhost:3000
+Backend: http://localhost:3000
 
 ### 3. Start Frontend
-
 ```bash
 cd frontend
-
-# Install dependencies
 npm install
-
-# Start frontend
 npm run dev
 ```
 
-Frontend will run on: http://localhost:5173
+Frontend: http://localhost:5173
 
-## Verify Everything is Working
+## ✅ Verify Setup
 
-### Check Backend
-
+### Backend Health
 ```bash
 curl http://localhost:3000/health
-curl http://localhost:3000/health/live
 curl http://localhost:3000/health/ready
 ```
 
-### Check Frontend
-
-Open http://localhost:8080 (or http://localhost:5173 if manual) in your browser.
-
-### Check Database
-
+### Database Connection
 ```bash
-# Connect to database
-docker-compose exec postgres psql -U taskuser -d taskdb
-
-# List tenant schemas
-\dn
-
-# View platform tenant users
-SET search_path TO tenant_platform;
-SELECT * FROM users;
+docker-compose exec postgres psql -U taskuser -d taskdb -c "SELECT * FROM tenants;"
 ```
 
-## Troubleshooting
+### Frontend
+Open http://localhost:8080 (or http://localhost:5173) in browser.
+
+## 🔧 Troubleshooting
 
 ### Port Already in Use
 
-If port 3000, 5432, or 8080 is already in use:
-
 **Windows:**
 ```powershell
-# Find process using port
 netstat -ano | findstr :3000
-
-# Kill process (replace <PID> with actual process ID)
 taskkill /PID <PID> /F
 ```
 
 **Linux/Mac:**
 ```bash
-# Find and kill process
 lsof -ti:3000 | xargs kill -9
 ```
 
-### Backend Can't Connect to Database
+### Database Connection Issues
 
 1. Check PostgreSQL is running: `docker ps | grep postgres`
-2. Verify database credentials in `.env` file
-3. Check backend logs: `docker-compose logs backend`
+2. Verify credentials in `.env` file
+3. Check logs: `docker-compose logs backend`
 
-### Frontend Can't Connect to Backend
+### Migrations Not Running
 
-1. Verify backend is running: `curl http://localhost:3000/health`
-2. Check browser console for errors
-3. Verify frontend proxy configuration in `vite.config.js`
-
-### Database Migrations Not Running
-
-Migrations run automatically when PostgreSQL starts. If tables don't exist:
-
+Manually run migrations:
 ```bash
-# Manually run migrations
 docker-compose exec postgres psql -U taskuser -d taskdb -f /docker-entrypoint-initdb.d/001_create_tenants.sql
 docker-compose exec postgres psql -U taskuser -d taskdb -f /docker-entrypoint-initdb.d/002_create_users.sql
 docker-compose exec postgres psql -U taskuser -d taskdb -f /docker-entrypoint-initdb.d/003_create_tasks.sql
 ```
 
-## Development Tips
+## 💡 Development Tips
 
-- Hot reload supported for both backend and frontend
-- View logs: `docker-compose logs -f`
-- Reset database: `docker-compose down -v`
-- Restart services: `docker-compose restart backend frontend`
+- **Hot Reload**: Both backend and frontend support hot reload
+- **View Logs**: `docker-compose logs -f [service]`
+- **Reset Database**: `docker-compose down -v`
+- **Restart Service**: `docker-compose restart [service]`
 
-For EKS deployment, see [CI_CD_SETUP.md](CI_CD_SETUP.md).
+## 📚 Next Steps
+
+- [README.md](README.md) - Full documentation
+- [CI_CD_SETUP.md](CI_CD_SETUP.md) - CI/CD pipeline configuration
+- [database/README.md](database/README.md) - Database details
+- [Gitops-pipeline](https://github.com/SaaSInfraLab/Gitops-pipeline) - GitOps deployment configuration

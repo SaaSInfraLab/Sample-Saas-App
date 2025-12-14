@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main, develop, flux-test ]
   pull_request:
-    branches: [ main, develop ]
+    branches: [ main, develop, flux-test ]
 
 env:
   AWS_REGION: us-east-1
